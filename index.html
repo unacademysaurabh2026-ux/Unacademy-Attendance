@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>FaceScan • Student Attendance</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+    <script>
+      window.FACESCAN_CONFIG = {
+        instituteName: "FaceScan Attendance",
+        deviceLabel: "Institute Device",
+        matchThreshold: 0.47,
+        modelUrl: "https://cdn.jsdelivr.net/gh/vladmandic/face-api/model/",
+      };
+    </script>
+    <script src="app.js" defer></script>
+    <style>
+      /* ── Tablet / responsive fixes ── */
+      @media (max-width: 1024px) {
+        .max-w-6xl { max-width: 100% !important; }
+      }
+      /* ── Circular camera (scan section) ── */
+      #attendance-camera-box {
+        width: min(88vw, 420px);
+        height: min(88vw, 420px);
+        border-radius: 50%;
+        overflow: hidden;
+        position: relative;
+        margin: 0 auto;
+        border: 8px solid rgba(255,255,255,0.9);
+        box-shadow:
+          0 0 0 4px rgba(255,255,255,0.2),
+          0 0 60px rgba(255,255,255,0.55),
+          0 0 100px rgba(255,255,255,0.25),
+          0 0 140px rgba(255,255,255,0.1);
+        background: #0f172a;
+      }
+      #attendance-camera-box video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transform: scale(1);
+        transform-origin: center center;
+      }
+      #attendance-face-overlay {
+        border-radius: 50% !important;
+      }
+      /* ── Name strip ── */
+      #scan-name-strip {
+        min-height: 38px;
+        border-radius: 24px;
+        font-size: 1.05rem;
+        font-weight: 700;
+        text-align: center;
+        padding: 8px 20px;
+        color: #fff;
+        letter-spacing: 0.02em;
+        transition: background 0.3s ease;
+        margin-top: 14px;
+      }
+      /* ── Fullscreen mode tweaks ── */
+      :fullscreen #attendance-camera-box { background: #020617; }
+:fullscreen #attendance-scan-section,
+      :-webkit-full-screen #attendance-scan-section {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #020617;
+        min-height: 100vh;
+        padding: 20px;
+      }
+      /* ── Tab scrollbar hide ── */
+      .nav-scroll::-webkit-scrollbar { display: none; }
+      .nav-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+      .toggle-bg { transition: background 0.2s; }
+  input:checked ~ .toggle-bg { background: #0ea5e9; }
+  input:checked ~ .toggle-dot { transform: translateX(20px); }
+</style>
+  </head>
+  <body class="bg-slate-950 text-slate-200 min-h-screen">
+
+    <!-- ── NAV ── -->
+    <div class="bg-slate-900 border-b border-slate-800 sticky top-0 z-50">
+      <div class="max-w-6xl mx-auto px-3">
+        <div class="flex items-center justify-between h-14 gap-2">
+          <div class="flex items-center gap-x-2 min-w-0 shrink-0">
+            <div class="w-8 h-8 bg-white rounded-xl flex items-center justify-center shadow-inner shrink-0">
+              <img src="images/logo.png" alt="logo" class="w-5 h-5 object-contain" onerror="this.style.display='none';this.parentElement.textContent='📷'" />
+            </div>
+            <div class="min-w-0 hidden sm:block">
+              <h1 class="text-lg font-semibold tracking-tight truncate">Unacademy Gwalior</h1>
+            </div>
+          </div>
+
+          <!-- Tabs -->
+          <div class="main-nav flex items-center gap-x-1 bg-slate-800 rounded-3xl p-1 text-sm font-medium overflow-x-auto nav-scroll">
+            <button onclick="showSection('home')" id="tab-home"
+              class="nav-active px-3 py-1.5 rounded-3xl flex items-center gap-x-1 transition-all whitespace-nowrap text-xs sm:text-sm">
+              <span>🏠</span><span class="hidden md:inline">Home</span>
+            </button>
+            <button onclick="showSection('register')" id="tab-register"
+              class="px-3 py-1.5 rounded-3xl flex items-center gap-x-1 hover:bg-slate-700 transition-all whitespace-nowrap text-xs sm:text-sm">
+              <span>📝</span><span class="hidden md:inline">Register</span>
+            </button>
+            <button onclick="showSection('attendance')" id="tab-attendance"
+              class="px-3 py-1.5 rounded-3xl flex items-center gap-x-1 hover:bg-slate-700 transition-all whitespace-nowrap text-xs sm:text-sm">
+              <span>🔍</span><span class="hidden md:inline">Scan</span>
+            </button>
+            <button onclick="showSection('records')" id="tab-records"
+              class="px-3 py-1.5 rounded-3xl flex items-center gap-x-1 hover:bg-slate-700 transition-all whitespace-nowrap text-xs sm:text-sm">
+              <span>📊</span><span class="hidden md:inline">Records</span>
+            </button>
+            <button onclick="showSection('trash')" id="tab-trash"
+              class="px-3 py-1.5 rounded-3xl flex items-center gap-x-1 hover:bg-slate-700 transition-all whitespace-nowrap text-xs sm:text-sm">
+              <span>🗑️</span><span class="hidden md:inline">Bin</span>
+            </button>
+            <button onclick="showSection('unidentified')" id="tab-unidentified"
+              class="px-3 py-1.5 rounded-3xl flex items-center gap-x-1 hover:bg-slate-700 transition-all whitespace-nowrap text-xs sm:text-sm relative">
+              <span>❓</span><span class="hidden md:inline">Unknown</span>
+              <span id="unidentified-badge"
+                style="display:none;"
+                class="absolute -top-1 -right-1 bg-amber-500 text-white text-[10px] font-bold w-4 h-4 rounded-full inline-flex items-center justify-center leading-none">
+              </span>
+            </button>
+          </div>
+
+          <div class="flex items-center gap-x-2 shrink-0">
+
+            <div class="flex items-center bg-emerald-600 text-white text-xs font-semibold px-3 h-8 rounded-3xl">
+              <div class="w-1.5 h-1.5 bg-white rounded-full mr-1"></div>
+              <span>LOCAL</span>
+            </div>
+            <div class="text-right hidden lg:block">
+              <p id="device-label" class="text-xs text-slate-400">Institute Device</p>
+              <p id="current-time" class="text-sm font-medium"></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="max-w-6xl mx-auto px-3 py-4">
+
+      <!-- ══════════════════════════════════ HOME ══ -->
+      <div id="section-home" class="space-y-6">
+        <div class="bg-gradient-to-r from-sky-500 to-blue-600 text-white rounded-3xl p-6 md:p-8 flex flex-col md:flex-row items-center gap-6">
+          <div class="flex-1 w-full">
+            <h2 class="text-2xl md:text-4xl font-semibold mb-3">Welcome to FaceScan Attendance</h2>
+            <p class="text-sky-100 text-base mb-5">
+              Mark attendance instantly using face scan on your tablet or mobile. Register once, scan daily — data saved privately on this device.
+            </p>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-white/10 backdrop-blur-md rounded-2xl p-4">
+                <div class="text-4xl font-bold" id="total-students">0</div>
+                <p class="text-sky-100 text-sm">Registered Students</p>
+              </div>
+              <div class="bg-white/10 backdrop-blur-md rounded-2xl p-4">
+                <div class="text-4xl font-bold flex items-baseline" id="today-attendance">
+                  0<span class="text-sm ml-1 font-medium">/0</span>
+                </div>
+                <p class="text-sky-100 text-sm">Today's Attendance</p>
+              </div>
+            </div>
+            <div class="mt-6 flex flex-wrap items-center gap-3 text-sm">
+              <button onclick="showSection('register')"
+                class="bg-white text-sky-600 font-semibold px-6 py-3 rounded-3xl flex items-center gap-x-2 hover:scale-105 transition-transform">
+                <span>Register New Student →</span>
+              </button>
+              <button onclick="showSection('attendance')"
+                class="bg-white/20 hover:bg-white/30 font-semibold px-6 py-3 rounded-3xl flex items-center gap-x-2 transition-all">
+                Start Face Scan Now
+              </button>
+            </div>
+          </div>
+          <div class="flex-1 flex justify-center">
+            <div class="camera-box w-56 h-56 md:w-72 md:h-72 flex items-center justify-center relative">
+              <div class="text-center text-white">
+                <div class="text-7xl mb-3">📱</div>
+                <p class="font-medium text-lg">Ready for face scan</p>
+                <p class="text-sky-100 text-xs mt-1">Works on tablet and mobile</p>
+              </div>
+              <div class="absolute inset-0 bg-gradient-to-b from-transparent via-white/30 to-transparent scan-overlay"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Auto Backup Panel -->
+        <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5" id="auto-backup-panel">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold text-base flex items-center gap-2">⏰ Auto Backup</h3>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <div class="relative">
+                <input type="checkbox" id="auto-backup-enabled" class="sr-only" onchange="toggleAutoBackup(this.checked)">
+                <div class="w-11 h-6 bg-slate-700 rounded-full toggle-bg"></div>
+                <div class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full toggle-dot transition-transform"></div>
+              </div>
+              <span class="text-sm text-slate-400" id="auto-backup-status-label">Off</span>
+            </label>
+          </div>
+
+          <div id="auto-backup-options" class="space-y-4 opacity-50 pointer-events-none">
+            <!-- Mode selector -->
+            <div class="flex gap-2">
+              <button onclick="setAutoBackupMode('interval')" id="ab-mode-interval"
+                class="flex-1 text-sm py-2 rounded-2xl border-2 border-sky-500 bg-sky-500/10 text-sky-300 font-semibold">
+                ⏱ Fixed Interval
+              </button>
+              <button onclick="setAutoBackupMode('schedule')" id="ab-mode-schedule"
+                class="flex-1 text-sm py-2 rounded-2xl border-2 border-slate-600 text-slate-400 font-semibold">
+                📅 Specific Times
+              </button>
+            </div>
+
+            <!-- Fixed interval -->
+            <div id="ab-interval-section">
+              <label class="text-xs text-slate-400 mb-1 block">Backup every</label>
+              <div class="flex items-center gap-2">
+                <input type="number" id="ab-interval-value" value="30" min="1" max="1440"
+                  class="w-20 bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-xl px-3 py-2 text-sm outline-none text-center"
+                  onchange="saveAutoBackupSettings()" />
+                <select id="ab-interval-unit" onchange="saveAutoBackupSettings()"
+                  class="bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-xl px-3 py-2 text-sm outline-none">
+                  <option value="min">Minutes</option>
+                  <option value="hr" selected>Hours</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Specific times -->
+            <div id="ab-schedule-section" class="hidden">
+              <label class="text-xs text-slate-400 mb-2 block">Backup at these times daily</label>
+              <div id="ab-times-list" class="space-y-2 mb-2"></div>
+              <button onclick="addScheduleTime()" class="text-xs text-sky-400 bg-sky-500/10 hover:bg-sky-500/20 px-3 py-1.5 rounded-xl font-medium">
+                + Add Time
+              </button>
+            </div>
+
+            <!-- File type -->
+            <div class="bg-slate-800/60 rounded-2xl p-3">
+              <p class="text-xs text-slate-400 mb-2 font-medium">Backup file type</p>
+              <div class="flex gap-4">
+                <label class="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="checkbox" id="ab-type-json" checked onchange="saveAutoBackupSettings()"
+                    class="w-4 h-4 accent-sky-500" /> JSON (Full data)
+                </label>
+                <label class="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="checkbox" id="ab-type-csv" onchange="saveAutoBackupSettings()"
+                    class="w-4 h-4 accent-emerald-500" /> CSV (Attendance)
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-xs text-slate-500 mt-3" id="ab-last-backup-label">Last auto backup: Never</p>
+        </div>
+
+        <!-- Backup / Import -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <button onclick="exportBackup()"
+            class="bg-slate-900 border border-slate-700 hover:border-sky-400 rounded-2xl p-4 text-center text-sm font-medium transition-all">
+            💾 Export Backup
+          </button>
+          <button onclick="importBackup()"
+            class="bg-slate-900 border border-slate-700 hover:border-emerald-400 rounded-2xl p-4 text-center text-sm font-medium transition-all">
+            📥 Import Backup
+          </button>
+          <button onclick="showSection('trash')"
+            class="bg-slate-900 border border-slate-700 hover:border-amber-400 rounded-2xl p-4 text-center text-sm font-medium transition-all">
+            🗑️ Recycle Bin
+          </button>
+          <button onclick="sendWhatsAppToAll()"
+            class="bg-slate-900 border border-slate-700 hover:border-green-400 rounded-2xl p-4 text-center text-sm font-medium transition-all">
+            📲 WA to All (Today)
+          </button>
+        </div>
+
+        <h3 class="text-lg font-semibold px-1">How it works</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div class="bg-slate-900 rounded-3xl p-5 border border-slate-800">
+            <div class="text-4xl mb-3">1️⃣</div>
+            <h4 class="font-semibold">Register Student</h4>
+            <p class="text-slate-400 mt-1 text-sm">Capture face from 3 angles or upload 3 photos.</p>
+          </div>
+          <div class="bg-slate-900 rounded-3xl p-5 border border-slate-800">
+            <div class="text-4xl mb-3">2️⃣</div>
+            <h4 class="font-semibold">Face Scan at Institute</h4>
+            <p class="text-slate-400 mt-1 text-sm">Student scans face on your device, app identifies live.</p>
+          </div>
+          <div class="bg-slate-900 rounded-3xl p-5 border border-slate-800">
+            <div class="text-4xl mb-3">3️⃣</div>
+            <h4 class="font-semibold">Saved Locally + WhatsApp</h4>
+            <p class="text-slate-400 mt-1 text-sm">Attendance saved on device. Send WhatsApp to all parents at once.</p>
+          </div>
+        </div>
+      </div>
+      <!-- end HOME -->
+
+      <!-- ══════════════════════════════════ REGISTER ══ -->
+      <div id="section-register" class="hidden">
+        <div class="max-w-2xl mx-auto bg-slate-900 rounded-3xl p-5 md:p-8">
+          <h2 class="text-2xl font-semibold mb-6 flex items-center gap-x-2">
+            <span>📝</span> Register New Student
+          </h2>
+
+          <!-- Already-registered banner -->
+          <div id="already-registered-banner" class="hidden mb-5 bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4">
+            <div class="flex items-center gap-3 mb-3">
+              <span class="text-2xl">⚠️</span>
+              <div>
+                <p class="font-semibold text-amber-300">Student Already Registered</p>
+                <p id="already-registered-text" class="text-sm text-amber-200/70 mt-0.5"></p>
+              </div>
+            </div>
+            <div class="flex gap-2 flex-wrap">
+              <button type="button" onclick="proceedAsUpdate()"
+                class="bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold px-5 py-2 rounded-2xl">
+                ✏️ Update Info &amp; Face
+              </button>
+              <button type="button" onclick="cancelDuplicateRegistration()"
+                class="bg-slate-700 hover:bg-slate-600 text-white text-sm font-semibold px-5 py-2 rounded-2xl">
+                Cancel
+              </button>
+            </div>
+          </div>
+
+          <form id="register-form" onsubmit="registerStudent(event)" class="space-y-5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-slate-400 mb-1">Student Name</label>
+                <input type="text" id="name" required
+                  class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 text-base outline-none" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-400 mb-1">Roll Number</label>
+                <input type="text" id="roll" required oninput="checkExistingStudent()"
+                  class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 text-base outline-none" />
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-slate-400 mb-1">Class / Section</label>
+                <input type="text" id="class" placeholder="10-A" required oninput="checkExistingStudent()"
+                  class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 text-base outline-none" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-400 mb-1">Student Mobile</label>
+                <input type="tel" id="student-phone" placeholder="9876543210"
+                  class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 text-base outline-none" />
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1">Parent Mobile Number</label>
+              <input type="tel" id="parent-phone" placeholder="9876543210" required
+                class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 text-base outline-none" />
+            </div>
+
+            <!-- Multi-angle face capture -->
+            <div class="mt-4">
+              <label class="block text-sm font-medium text-slate-400 mb-3">Capture Student Face (3 Angles)</label>
+
+              <!-- Angle step indicator -->
+              <div id="angle-step-indicator" class="flex gap-2 mb-3">
+                <div class="angle-step-pill flex-1 text-center py-2 px-2 rounded-2xl text-xs font-semibold border-2 border-sky-500 bg-sky-500/10 text-sky-300" data-step="0">😐 Front</div>
+                <div class="angle-step-pill flex-1 text-center py-2 px-2 rounded-2xl text-xs font-semibold border-2 border-slate-600 text-slate-500" data-step="1">← Left</div>
+                <div class="angle-step-pill flex-1 text-center py-2 px-2 rounded-2xl text-xs font-semibold border-2 border-slate-600 text-slate-500" data-step="2">Right →</div>
+              </div>
+
+              <!-- Angle instruction -->
+              <div id="angle-instruction" class="mb-3 text-center bg-slate-800 rounded-2xl py-2 px-3 text-sm text-slate-300">
+                Start camera, then capture each angle one by one.
+              </div>
+
+              <!-- Captured angle thumbnails (live camera) -->
+              <div class="flex gap-2 mb-3" id="angle-thumbnails">
+                <div class="flex-1 flex flex-col items-center gap-1">
+                  <div id="thumb-front" class="w-full aspect-square rounded-2xl bg-slate-800 border-2 border-dashed border-slate-600 flex items-center justify-center text-2xl text-slate-600 overflow-hidden">😐</div>
+                  <span class="text-xs text-slate-500">Front</span>
+                </div>
+                <div class="flex-1 flex flex-col items-center gap-1">
+                  <div id="thumb-left" class="w-full aspect-square rounded-2xl bg-slate-800 border-2 border-dashed border-slate-600 flex items-center justify-center text-2xl text-slate-600 overflow-hidden">←</div>
+                  <span class="text-xs text-slate-500">Left</span>
+                </div>
+                <div class="flex-1 flex flex-col items-center gap-1">
+                  <div id="thumb-right" class="w-full aspect-square rounded-2xl bg-slate-800 border-2 border-dashed border-slate-600 flex items-center justify-center text-2xl text-slate-600 overflow-hidden">→</div>
+                  <span class="text-xs text-slate-500">Right</span>
+                </div>
+              </div>
+
+              <!-- Camera box - circular like scan attendance -->
+              <div style="
+                width: min(72vw, 480px);
+                height: min(72vw, 480px);
+                border-radius: 50%;
+                overflow: hidden;
+                position: relative;
+                margin: 0 auto;
+                border: 8px solid rgba(255,255,255,0.9);
+                box-shadow: 0 0 0 4px rgba(255,255,255,0.2), 0 0 60px rgba(255,255,255,0.5), 0 0 100px rgba(255,255,255,0.2);
+                background: #0f172a;
+              ">
+                <video id="register-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;transform:scale(0.85);transform-origin:center center;"></video>
+                <canvas id="register-canvas" class="hidden"></canvas>
+                <div id="register-overlay" style="border-radius:50%;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);">
+                  <button type="button" onclick="startRegisterCamera()" id="start-register-btn"
+                    class="bg-white text-slate-900 px-6 py-3 rounded-3xl font-semibold flex items-center gap-x-2">
+                    <span>📸 Start Camera</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="flex flex-col sm:flex-row gap-3 mt-3">
+                <button type="button" id="capture-angle-btn" onclick="captureCurrentAngle()"
+                  class="flex-1 bg-sky-500 hover:bg-sky-600 text-white py-3 rounded-3xl font-semibold">
+                  📸 Capture Front Face
+                </button>
+                <button type="button" onclick="resetAllAngles()"
+                  class="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-3xl font-semibold">
+                  🔄 Reset Angles
+                </button>
+              </div>
+
+              <p id="register-status" class="text-sm text-slate-400 mt-3">
+                Start the camera and capture 3 angles: Front → Left → Right.
+              </p>
+
+              <!-- FIX #5: Upload from photos section -->
+              <div class="mt-5 bg-slate-800/60 rounded-2xl p-4 border border-slate-700">
+                <p class="text-sm font-medium text-slate-300 mb-3">
+                  📷 Or upload 3 photos (if student can't come in person)
+                </p>
+                <div class="grid grid-cols-3 gap-3">
+                  <div class="flex flex-col items-center gap-2">
+                    <button type="button" onclick="triggerPhotoUpload('front')"
+                      class="w-full aspect-square rounded-xl bg-slate-700 hover:bg-slate-600 border-2 border-dashed border-slate-500 hover:border-sky-400 flex flex-col items-center justify-center gap-1 transition-all overflow-hidden"
+                      id="upload-preview-front">
+                      <span class="text-2xl">😐</span>
+                      <span class="text-xs text-slate-500">Tap to upload</span>
+                    </button>
+                    <span class="text-xs text-slate-400">Front photo</span>
+                  </div>
+                  <div class="flex flex-col items-center gap-2">
+                    <button type="button" onclick="triggerPhotoUpload('left')"
+                      class="w-full aspect-square rounded-xl bg-slate-700 hover:bg-slate-600 border-2 border-dashed border-slate-500 hover:border-sky-400 flex flex-col items-center justify-center gap-1 transition-all overflow-hidden"
+                      id="upload-preview-left">
+                      <span class="text-2xl">←</span>
+                      <span class="text-xs text-slate-500">Tap to upload</span>
+                    </button>
+                    <span class="text-xs text-slate-400">Left photo</span>
+                  </div>
+                  <div class="flex flex-col items-center gap-2">
+                    <button type="button" onclick="triggerPhotoUpload('right')"
+                      class="w-full aspect-square rounded-xl bg-slate-700 hover:bg-slate-600 border-2 border-dashed border-slate-500 hover:border-sky-400 flex flex-col items-center justify-center gap-1 transition-all overflow-hidden"
+                      id="upload-preview-right">
+                      <span class="text-2xl">→</span>
+                      <span class="text-xs text-slate-500">Tap to upload</span>
+                    </button>
+                    <span class="text-xs text-slate-400">Right photo</span>
+                  </div>
+                </div>
+                <p class="text-xs text-slate-500 mt-2">Tip: Use clear, well-lit face photos for best recognition accuracy.</p>
+              </div>
+
+              <!-- Legacy single preview -->
+              <div id="register-preview" class="hidden mt-4">
+                <p class="text-sm text-slate-400 mb-2">Captured Face Preview</p>
+                <img id="register-photo-preview"
+                  class="w-32 h-32 object-cover rounded-3xl border-4 border-white shadow-2xl mx-auto"
+                  alt="Captured student face" />
+              </div>
+            </div>
+
+            <button type="submit" id="register-submit-btn"
+              class="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-3xl text-xl font-semibold mt-4">
+              ✅ Register Student
+            </button>
+          </form>
+        </div>
+      </div>
+      <!-- end REGISTER -->
+
+      <!-- ══════════════════════════════════ SCAN ATTENDANCE ══ -->
+      <!-- FIX #7, #8, #9: Circular camera, clean UI, no clutter -->
+      <div id="section-attendance" class="hidden">
+        <div id="attendance-scan-section" class="flex flex-col items-center pt-4 pb-6">
+
+          <!-- Top toolbar: lock + flip + fullscreen -->
+          <div id="scan-toolbar" class="flex items-center justify-between w-full max-w-sm mb-4 px-2">
+            <button id="scan-lock-btn" onclick="toggleScanLock()"
+              title="Tap to lock navigation"
+              class="w-11 h-11 rounded-2xl bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xl transition-all">
+              🔓
+            </button>
+            <p class="text-slate-400 text-sm font-medium">Face Scan</p>
+            <div class="flex gap-2">
+              <!-- FIX #9: Camera flip -->
+              <button onclick="flipCamera()"
+                title="Flip camera"
+                class="w-11 h-11 rounded-2xl bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xl transition-all">
+                🔄
+              </button>
+              <!-- FIX #10: Fullscreen -->
+              <button onclick="toggleFullscreen()"
+                title="Fullscreen"
+                class="w-11 h-11 rounded-2xl bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xl transition-all">
+                ⛶
+              </button>
+            </div>
+          </div>
+
+          <!-- Circular camera -->
+          <div id="attendance-camera-box"
+            style="position:relative;width:min(88vw,420px);height:min(88vw,420px);border-radius:50%;overflow:hidden;margin:0 auto;border:8px solid rgba(255,255,255,0.9);box-shadow:0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25),0 0 140px rgba(255,255,255,0.1);background:#0f172a;">
+            <video id="attendance-video" autoplay muted playsinline
+              style="width:100%;height:100%;object-fit:cover;transform:scale(1);transform-origin:center;"></video>
+            <canvas id="attendance-canvas" class="hidden"></canvas>
+            <!-- overlay canvas injected by JS -->
+          </div>
+
+          <!-- FIX #7: Name strip below camera — green bar showing identified name -->
+          <div id="scan-name-strip" style="background:transparent;" class="w-full max-w-sm text-white font-bold text-center py-2 px-4 rounded-2xl mt-3 min-h-[40px] transition-all"></div>
+
+          <!-- Status text (minimal) -->
+          <p id="attendance-status" class="text-sm text-slate-400 mt-2 text-center max-w-xs px-4">
+            Camera will start automatically.
+          </p>
+
+          <!-- Buttons: Start Camera → then Scan Now appears → then Confirm -->
+          <div class="flex gap-3 mt-4 w-full max-w-sm px-2" id="scan-btn-row">
+            <button onclick="startAttendanceCamera()" id="start-attendance-btn"
+              class="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-4 rounded-3xl font-semibold flex items-center justify-center gap-x-2 transition-all">
+              📷 Start Camera
+            </button>
+            <button onclick="captureAttendancePhoto()" id="capture-attendance-btn"
+              class="flex-1 bg-sky-500 text-white py-4 rounded-3xl font-semibold flex items-center justify-center gap-x-2 hidden">
+              ✅ Confirm Attendance
+            </button>
+            <!-- scan-now-btn is injected by JS after camera starts -->
+          </div>
+
+          <!-- Hidden elements for JS compatibility -->
+          <div id="recognition-result" class="hidden">
+            <p id="recognition-title"></p>
+            <p id="recognition-copy"></p>
+            <div id="student-match-list"></div>
+          </div>
+        </div>
+      </div>
+      <!-- end SCAN -->
+
+      <!-- ══════════════════════════════════ RECORDS ══ -->
+      <div id="section-records" class="hidden">
+        <div class="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3 mb-5">
+          <h2 class="text-2xl font-semibold">All Records</h2>
+          <div class="flex gap-2 flex-wrap">
+            <button id="show-students-btn" onclick="showStudentsList()"
+              class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-3xl text-sm font-medium">
+              👥 Students
+            </button>
+            <button id="show-attendance-btn" onclick="showAttendanceList()"
+              class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-3xl text-sm font-medium">
+              📋 Attendance Log
+            </button>
+            <button id="export-csv-btn" onclick="exportAttendanceCSV()"
+              class="hidden px-4 py-2 bg-slate-800 hover:bg-emerald-500/20 hover:text-emerald-400 rounded-3xl text-sm font-medium transition-colors">
+              ⬇️ CSV
+            </button>
+            <button id="export-pdf-btn" onclick="exportAttendancePDF()"
+              class="hidden px-4 py-2 bg-slate-800 hover:bg-sky-500/20 hover:text-sky-400 rounded-3xl text-sm font-medium transition-colors">
+              📄 PDF
+            </button>
+            <!-- FIX #3: Send WA to all -->
+            <button id="wa-all-btn" onclick="sendWhatsAppToAll()"
+              class="hidden px-4 py-2 bg-green-500/10 hover:bg-green-500/20 text-green-400 rounded-3xl text-sm font-semibold transition-colors">
+              📲 WA to All (Today)
+            </button>
+          </div>
+        </div>
+
+        <div id="students-list-view">
+          <div class="mb-4 relative">
+            <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-lg pointer-events-none">🔍</span>
+            <input
+              id="student-search-input"
+              type="text"
+              placeholder="Search students by name…"
+              oninput="filterStudentsGrid(this.value)"
+              class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-2xl pl-11 pr-4 py-3 text-sm text-slate-100 placeholder-slate-500 transition-colors"
+            />
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" id="students-grid"></div>
+          <div id="students-no-results" class="hidden text-center py-12 text-slate-400">No students match your search.</div>
+        </div>
+
+        <div id="attendance-list-view" class="hidden">
+          <div class="bg-slate-900 rounded-3xl overflow-hidden">
+            <div class="overflow-x-auto">
+              <!-- FIX #4: Added WA Sent column -->
+              <table class="w-full min-w-[700px]">
+                <thead>
+                  <tr class="border-b border-slate-700 text-slate-400 text-xs">
+                    <th class="px-4 py-3 text-left">Date &amp; Time</th>
+                    <th class="px-4 py-3 text-left">Student</th>
+                    <th class="px-4 py-3 text-left">Roll</th>
+                    <th class="px-4 py-3 text-left">Class</th>
+                    <th class="px-4 py-3 text-left">Profile</th>
+                    <th class="px-4 py-3 text-center">WA Sent</th>
+                    <th class="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="attendance-table-body" class="text-sm"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- end RECORDS -->
+
+      <!-- ══════════════════════════════════ TRASH / RECYCLE BIN ══ -->
+      <!-- FIX #10: Recycle bin section -->
+      <div id="section-trash" class="hidden">
+        <div class="flex items-center justify-between mb-5">
+          <h2 class="text-2xl font-semibold">🗑️ Recycle Bin</h2>
+          <button onclick="clearTrash()"
+            class="text-sm text-red-400 bg-red-400/10 hover:bg-red-400/20 px-4 py-2 rounded-2xl font-medium transition-colors">
+            🗑️ Empty Bin
+          </button>
+        </div>
+        <p class="text-slate-400 text-sm mb-5">Items deleted here can be restored. They are permanently deleted when you empty the bin.</p>
+        <div id="trash-list" class="space-y-3"></div>
+      </div>
+      <!-- end TRASH -->
+
+      <!-- ══════════════════════════════════ UNIDENTIFIED DATA ══ -->
+      <div id="section-unidentified" class="hidden">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+          <div>
+            <h2 class="text-2xl font-semibold flex items-center gap-2">
+              ❓ Unidentified Scans
+              <span id="unidentified-badge-inline"
+                class="bg-amber-500 text-white text-xs font-bold px-2 py-0.5 rounded-xl"></span>
+            </h2>
+            <p class="text-slate-400 text-sm mt-1">
+              Faces captured but not recognised. Select a student and mark attendance using the <strong class="text-amber-300">original scan time</strong>.
+            </p>
+          </div>
+          <button onclick="clearResolvedUnidentified()"
+            class="text-sm text-slate-400 bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-2xl font-medium transition-colors whitespace-nowrap self-start sm:self-auto">
+            🧹 Clear Resolved
+          </button>
+        </div>
+
+        <!-- Info box -->
+        <div class="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 mb-5 text-sm">
+          <div class="flex items-start gap-3">
+            <span class="text-2xl">⏱️</span>
+            <div>
+              <p class="font-semibold text-amber-300 mb-1">Original Scan Time is Preserved</p>
+              <p class="text-amber-200/70">When you mark attendance here, the system uses the exact time the face was scanned — not the current time. WhatsApp messages will also show the original scan time.</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="unidentified-list" class="space-y-4">
+          <div class="text-center py-16 text-slate-400">Loading…</div>
+        </div>
+      </div>
+      <!-- end UNIDENTIFIED DATA -->
+
+    </div><!-- end container -->
+
+    <!-- ══ SUCCESS MODAL ══ -->
+    <div onclick="if(event.target.id==='success-modal') hideModal()"
+      id="success-modal"
+      class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-[9999]">
+      <div onclick="event.stopImmediatePropagation()"
+        class="modal bg-slate-900 w-full max-w-sm mx-4 rounded-3xl p-6 text-center">
+        <div class="text-6xl mb-4">🎉</div>
+        <h3 id="modal-title" class="text-xl font-semibold">Attendance Marked!</h3>
+        <p id="modal-subtitle" class="text-slate-400 mt-2"></p>
+        <div class="my-5 border border-slate-700 rounded-2xl p-3 text-left text-sm">
+          <div id="modal-details"></div>
+        </div>
+        <button id="modal-whatsapp-btn" onclick="sendWhatsAppMessage()"
+          class="w-full bg-green-500 hover:bg-green-600 py-4 rounded-3xl text-white font-semibold flex items-center justify-center gap-x-2 mb-2">
+          💬 Send WhatsApp to Parent
+        </button>
+        <button onclick="hideModal()" class="w-full py-3 text-slate-400 font-medium text-sm">
+          Close
+        </button>
+      </div>
+    </div>
+
+    <!-- ══ EDIT STUDENT MODAL ══ -->
+    <div onclick="if(event.target.id==='edit-student-modal') closeEditModal()"
+      id="edit-student-modal"
+      class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-[9999] overflow-y-auto">
+      <div onclick="event.stopImmediatePropagation()"
+        class="modal bg-slate-900 w-full max-w-lg mx-4 my-4 rounded-3xl p-6">
+        <h3 class="text-xl font-semibold mb-5 flex items-center gap-x-2">
+          <span>✏️</span> Edit Student Details
+        </h3>
+        <div class="space-y-4">
+          <input type="hidden" id="edit-student-id" />
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Student Name</label>
+              <input type="text" id="edit-name"
+                class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 outline-none" />
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Roll Number</label>
+              <input type="text" id="edit-roll"
+                class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 outline-none" />
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Class / Section</label>
+              <input type="text" id="edit-class"
+                class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 outline-none" />
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Student Mobile</label>
+              <input type="tel" id="edit-student-phone"
+                class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 outline-none" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Parent Mobile</label>
+            <input type="tel" id="edit-parent-phone"
+              class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-2xl px-4 py-3 outline-none" />
+          </div>
+        </div>
+
+        <!-- Re-scan face section -->
+        <div class="mt-5 border border-slate-700 rounded-2xl p-4 bg-slate-800/50">
+          <p class="text-sm font-medium text-slate-300 mb-3">🔄 Update Face Scan (optional)</p>
+          <p class="text-xs text-slate-500 mb-3">If this student has face recognition issues, re-capture their face angles here to replace their stored data.</p>
+          <div id="edit-angle-step-indicator" class="flex gap-2 mb-3">
+            <div class="flex-1 text-center py-1.5 px-2 rounded-2xl text-xs font-semibold border-2 border-sky-500 bg-sky-500/10 text-sky-300" id="edit-angle-pill-0">😐 Front</div>
+            <div class="flex-1 text-center py-1.5 px-2 rounded-2xl text-xs font-semibold border-2 border-slate-600 text-slate-500" id="edit-angle-pill-1">← Left</div>
+            <div class="flex-1 text-center py-1.5 px-2 rounded-2xl text-xs font-semibold border-2 border-slate-600 text-slate-500" id="edit-angle-pill-2">Right →</div>
+          </div>
+          <div id="edit-angle-instruction" class="text-xs text-slate-400 text-center mb-3 bg-slate-700/50 rounded-xl py-2">Start camera to capture new face angles.</div>
+          <div style="width:min(72vw,200px);height:min(72vw,200px);border-radius:50%;overflow:hidden;position:relative;margin:0 auto;border:6px solid rgba(255,255,255,0.8);box-shadow:0 0 40px rgba(255,255,255,0.3);background:#0f172a;" id="edit-camera-circle">
+            <video id="edit-register-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>
+            <div id="edit-register-overlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);border-radius:50%;">
+              <button type="button" onclick="startEditCamera()" class="bg-white text-slate-900 px-4 py-2 rounded-3xl font-semibold text-sm">📸 Start Camera</button>
+            </div>
+          </div>
+          <div class="flex gap-2 mt-3">
+            <button type="button" id="edit-capture-angle-btn" onclick="captureEditAngle()"
+              class="flex-1 text-sm bg-sky-500 hover:bg-sky-600 text-white py-2.5 rounded-2xl font-semibold">
+              📸 Capture Front Face
+            </button>
+            <button type="button" onclick="resetEditAngles()"
+              class="text-sm bg-slate-700 hover:bg-slate-600 text-white py-2.5 px-4 rounded-2xl font-semibold">
+              🔄 Reset
+            </button>
+          </div>
+          <p id="edit-register-status" class="text-xs text-slate-400 mt-2 text-center"></p>
+        </div>
+
+        <div class="flex gap-3 mt-5">
+          <button onclick="saveEditStudent()"
+            class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-3 rounded-3xl font-semibold">
+            💾 Save Changes
+          </button>
+          <button onclick="closeEditModal()"
+            class="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-3xl font-semibold">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- p id for institute-label needed by JS -->
+    <p id="institute-label" class="hidden"></p>
+
+  </body>
+</html>

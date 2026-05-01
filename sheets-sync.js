@@ -8,7 +8,7 @@
 //  <script src="sheets-sync.js" defer></script>
 // ============================================================
 
-window.SHEETS_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
+window.SHEETS_URL = "https://script.google.com/macros/s/AKfycbz0eZexwQj85eAjbAW6aULn2_BMwSs5cE1Fn5W2jOdZxeTxg_S8_GmlaogdTurfe2-ujg/exec";
 
 const SYNC_DEBOUNCE_MS = 1200;
 let _syncDebounceTimer = null;

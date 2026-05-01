@@ -57,8 +57,14 @@ function showSyncStatus(msg, color = "#0ea5e9") {
 //  Embedding helpers
 // ─────────────────────────────────────────────────────────────
 function serializeEmbeddings(descriptors) {
-  if (!Array.isArray(descriptors) || !descriptors.length) return "";
-  return descriptors.map(d => Array.from(d).join(",")).join("|");
+  if (!descriptors || !descriptors.length) return "";
+  return descriptors.map(d => {
+    // Handle Float32Array, regular Array, or array-like objects
+    if (d instanceof Float32Array || ArrayBuffer.isView(d)) return Array.from(d).join(",");
+    if (Array.isArray(d)) return d.join(",");
+    if (d && typeof d === "object") return Object.values(d).join(",");
+    return String(d);
+  }).filter(s => s.length > 10).join("|");
 }
 
 function deserializeEmbeddings(str) {

@@ -92,12 +92,21 @@ async function syncStudentToSheets(student) {
 
 async function syncFaceDataToSheets(student) {
   if (!student.descriptors?.length) return false;
-  return await sheetsRequest("saveFaceData", {
-    studentId:       student.id,
-    studentUniqueId: student.studentUniqueId || student.id,
-    embeddings:      serializeEmbeddings(student.descriptors),
-    updatedOn:       student.updatedOn || new Date().toISOString(),
-  });
+  const url = window.SHEETS_URL;
+  if (!url || url === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") return false;
+  try {
+    const res = await fetch(url, {
+      method: "POST", redirect: "follow",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ action: "saveFaceData", studentId: student.id, studentUniqueId: student.studentUniqueId || student.id, embeddings: serializeEmbeddings(student.descriptors), updatedOn: student.updatedOn || new Date().toISOString() }),
+    });
+    const json = JSON.parse(await res.text());
+    if (!json.ok) console.error("[Sheets] saveFaceData:", json.error);
+    return json;
+  } catch (err) {
+    console.error("[Sheets] saveFaceData error:", err.message);
+    return null;
+  }
 }
 
 async function syncAttendanceToSheets(record) {

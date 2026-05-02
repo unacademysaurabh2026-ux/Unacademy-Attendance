@@ -3,7 +3,7 @@
 //  Uses GET requests with URL params to avoid CORS issues
 // ============================================================
 
-window.SHEETS_URL = "https://script.google.com/macros/s/AKfycbwW-UpGr4v0NxO_9Orqmr78EAMWhQtGof3_B1ds4C6j56hYsOok2FKVHdJyQfYGxB751w/exec";
+window.SHEETS_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
 
 const SYNC_DEBOUNCE_MS = 1200;
 let _syncDebounceTimer = null;
@@ -336,3 +336,57 @@ document.addEventListener("DOMContentLoaded", () => {
     await loadFromSheets();
   }, 900);
 });
+
+// ─────────────────────────────────────────────────────────────
+//  Auto WhatsApp — sends to parent automatically after every scan
+// ─────────────────────────────────────────────────────────────
+function autoSendWhatsApp(record) {
+  try {
+    const phone = normalizeWhatsappNumber(record.parentPhone);
+    if (!phone) return;
+    const message = encodeURIComponent(
+      `Dear Parent,\n\nYour ward *${record.name}* (Roll No. ${record.roll}, ${record.class}) has marked attendance.\n\nTime: ${record.formattedTime}\n\nThank you!\n${state?.settings?.instituteName || "FaceScan Attendance"}`
+    );
+    setTimeout(() => {
+      window.open(`https://wa.me/${phone}?text=${message}`, "_blank", "noopener,noreferrer");
+      const idx = state.attendances.findIndex(a => a.id === record.id);
+      if (idx !== -1) {
+        state.attendances[idx] = { ...state.attendances[idx], waSent: true };
+        saveData();
+      }
+    }, 1200);
+  } catch (err) {
+    console.error("[AutoWA] Error:", err.message);
+  }
+}
+
+// Patch showQuickToast — called immediately after every successful scan
+(function patchAutoWA() {
+  document.addEventListener("DOMContentLoaded", () => {
+    setTimeout(() => {
+      const _orig = window.showQuickToast;
+      if (!_orig) return;
+      window.showQuickToast = function(record) {
+        _orig.call(this, record);
+        autoSendWhatsApp(record);
+      };
+    }, 700);
+  });
+})();
+
+// ─────────────────────────────────────────────────────────────
+//  Fix: force immediate UI re-render after WA sent
+//  markWaSent() calls saveData() but doesn't re-render the table
+// ─────────────────────────────────────────────────────────────
+(function patchMarkWaSent() {
+  document.addEventListener("DOMContentLoaded", () => {
+    setTimeout(() => {
+      const _orig = window.markWaSent;
+      if (!_orig) return;
+      window.markWaSent = function(recordId) {
+        _orig.call(this, recordId);
+        renderAttendanceTable?.(); // force immediate UI update
+      };
+    }, 700);
+  });
+})();

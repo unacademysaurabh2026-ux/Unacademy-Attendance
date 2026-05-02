@@ -3,7 +3,7 @@
 //  Uses GET requests with URL params to avoid CORS issues
 // ============================================================
 
-window.SHEETS_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
+window.SHEETS_URL = "https://script.google.com/macros/s/AKfycbwW-UpGr4v0NxO_9Orqmr78EAMWhQtGof3_B1ds4C6j56hYsOok2FKVHdJyQfYGxB751w/exec";
 
 const SYNC_DEBOUNCE_MS = 1200;
 let _syncDebounceTimer = null;

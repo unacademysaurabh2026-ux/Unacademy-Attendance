@@ -1843,8 +1843,50 @@ function markWaSent(recordId) {
   if (idx !== -1) {
     state.attendances[idx] = { ...state.attendances[idx], waSent: true };
     saveData();
+    // Immediately refresh the WA button in the table row if it's visible
+    refreshWaButtonInRow(recordId);
   }
 }
+
+// Refresh just the WA status cell + button for a specific row without re-rendering the whole table
+function refreshWaButtonInRow(recordId) {
+  const btn = dom.attendanceTableBody?.querySelector(
+    `.attendance-wa-btn[data-record-id="${CSS.escape(recordId)}"]`
+  );
+  if (!btn) return;
+  const row = btn.closest("tr");
+  if (!row) return;
+  // Update the waStatus cell (6th td, index 5)
+  const statusCell = row.querySelectorAll("td")[5];
+  if (statusCell) {
+    statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+  }
+}
+
+// When user returns from WhatsApp (tab becomes visible again or window regains focus),
+// re-render the attendance table so "✅ Sent" shows up without needing a refresh or nav.
+(function initWaReturnRefresh() {
+  let _pendingRefresh = false;
+
+  function doRefreshIfAttendanceVisible() {
+    if (_pendingRefresh) return;
+    // Only refresh if the attendance list view is currently showing
+    if (!dom.attendanceListView || dom.attendanceListView.classList.contains("hidden")) return;
+    _pendingRefresh = true;
+    // Small delay so the tab animation finishes first
+    setTimeout(() => {
+      renderAttendanceTable();
+      _pendingRefresh = false;
+    }, 120);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") doRefreshIfAttendanceVisible();
+  });
+
+  window.addEventListener("focus", doRefreshIfAttendanceVisible);
+  window.addEventListener("pageshow", doRefreshIfAttendanceVisible);
+})();
 
 // FIX #3: Send WhatsApp to ALL who haven't received it yet
 function sendWhatsAppToAll() {
@@ -2004,9 +2046,17 @@ function renderAttendanceTable() {
         </div>
       </td>
     `;
-    row.querySelector(".attendance-wa-btn")?.addEventListener("click", () => {
+    row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
       const rec = state.attendances.find(e => e.id === record.id);
-      if (rec) { openWhatsappForRecord(rec); markWaSent(rec.id); }
+      if (rec) {
+        openWhatsappForRecord(rec);
+        markWaSent(rec.id);
+        // Immediately update this button's row without waiting for return
+        const statusCell = row.querySelectorAll("td")[5];
+        if (statusCell) {
+          statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+        }
+      }
     });
     row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
       deleteAttendanceRecord(record.id);

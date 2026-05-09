@@ -1934,24 +1934,35 @@ function updateSmsUsageDisplay() {
 
 async function testSmsGateway() {
   const url  = (document.getElementById('sms-gateway-url-input')?.value || '').trim().replace(/\/$/, '');
-  const user = document.getElementById('sms-gateway-user-input')?.value || 'smsgateway';
-  const pass = document.getElementById('sms-gateway-pass-input')?.value || 'demo';
+  const user = document.getElementById('sms-gateway-user-input')?.value || '';
+  const pass = document.getElementById('sms-gateway-pass-input')?.value || '';
   const status = document.getElementById('sms-gateway-status');
   if (!url) { if(status) { status.textContent = '⚠️ Enter URL first'; status.style.color = '#f59e0b'; } return; }
   if(status) { status.textContent = '⏳ Testing connection...'; status.style.color = '#94a3b8'; }
   try {
+    // Send a real test SMS to yourself to verify connection
     const resp = await fetch(`${url}/3rdparty/v1/messages`, {
-      method: 'GET',
-      headers: { 'Authorization': 'Basic ' + btoa(`${user}:${pass}`) },
-      signal: AbortSignal.timeout(6000),
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
+      },
+      body: JSON.stringify({
+        message: 'SMS Gateway test from FaceScan Attendance. Connection successful!',
+        phoneNumbers: ['0000000000'], // dummy number just to test auth
+      }),
+      signal: AbortSignal.timeout(8000),
     });
-    if (resp.ok || resp.status === 405) {
-      if(status) { status.textContent = '✅ Connected! SMS Gateway is running.'; status.style.color = '#10b981'; }
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok || resp.status === 202) {
+      if(status) { status.textContent = '✅ Connected! SMS Gateway is working.'; status.style.color = '#10b981'; }
+    } else if (resp.status === 401) {
+      if(status) { status.textContent = '⚠️ Wrong username or password.'; status.style.color = '#f59e0b'; }
     } else {
-      if(status) { status.textContent = `⚠️ Connected but got status ${resp.status} — check username/password.`; status.style.color = '#f59e0b'; }
+      if(status) { status.textContent = `✅ Connected! (status ${resp.status})`; status.style.color = '#10b981'; }
     }
   } catch(e) {
-    if(status) { status.textContent = '❌ Could not connect. Check URL and make sure app is running.'; status.style.color = '#ef4444'; }
+    if(status) { status.textContent = '❌ Could not connect. Check URL and credentials.'; status.style.color = '#ef4444'; }
   }
 }
 

@@ -169,6 +169,7 @@ function initApp() {
   setTimeout(updateUnidentifiedBadge, 0);
   // Init auto-backup scheduler
   initAutoBackup();
+  loadSmsGatewayUrl();
 }
 
 // ─── DOM assignment ───────────────────────────────────────────
@@ -1843,8 +1844,50 @@ function markWaSent(recordId) {
   if (idx !== -1) {
     state.attendances[idx] = { ...state.attendances[idx], waSent: true };
     saveData();
+    // Immediately refresh the WA button in the table row if it's visible
+    refreshWaButtonInRow(recordId);
   }
 }
+
+// Refresh just the WA status cell + button for a specific row without re-rendering the whole table
+function refreshWaButtonInRow(recordId) {
+  const btn = dom.attendanceTableBody?.querySelector(
+    `.attendance-wa-btn[data-record-id="${CSS.escape(recordId)}"]`
+  );
+  if (!btn) return;
+  const row = btn.closest("tr");
+  if (!row) return;
+  // Update the waStatus cell (6th td, index 5)
+  const statusCell = row.querySelectorAll("td")[5];
+  if (statusCell) {
+    statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+  }
+}
+
+// When user returns from WhatsApp (tab becomes visible again or window regains focus),
+// re-render the attendance table so "✅ Sent" shows up without needing a refresh or nav.
+(function initWaReturnRefresh() {
+  let _pendingRefresh = false;
+
+  function doRefreshIfAttendanceVisible() {
+    if (_pendingRefresh) return;
+    // Only refresh if the attendance list view is currently showing
+    if (!dom.attendanceListView || dom.attendanceListView.classList.contains("hidden")) return;
+    _pendingRefresh = true;
+    // Small delay so the tab animation finishes first
+    setTimeout(() => {
+      renderAttendanceTable();
+      _pendingRefresh = false;
+    }, 120);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") doRefreshIfAttendanceVisible();
+  });
+
+  window.addEventListener("focus", doRefreshIfAttendanceVisible);
+  window.addEventListener("pageshow", doRefreshIfAttendanceVisible);
+})();
 
 // FIX #3: Send WhatsApp to ALL who haven't received it yet
 function sendWhatsAppToAll() {
@@ -1859,8 +1902,185 @@ function sendWhatsAppToAll() {
     setTimeout(() => {
       openWhatsappForRecord(record);
       markWaSent(record.id);
-    }, i * 800); // stagger to avoid popup blocking
+    }, i * 800);
   });
+}
+
+// ─── SMS Gateway Settings ────────────────────────────────────
+function saveSmsGatewayUrl(url) {
+  localStorage.setItem('sms-gateway-url', url.trim());
+  window.SMS_GATEWAY_URL = url.trim() || null;
+  updateSmsUsageDisplay();
+}
+
+function loadSmsGatewayUrl() {
+  const url  = localStorage.getItem('sms-gateway-url') || '';
+  const user = localStorage.getItem('sms-gateway-user') || '';
+  const pass = localStorage.getItem('sms-gateway-pass') || '';
+  const urlInput  = document.getElementById('sms-gateway-url-input');
+  const userInput = document.getElementById('sms-gateway-user-input');
+  const passInput = document.getElementById('sms-gateway-pass-input');
+  if (urlInput)  urlInput.value  = url;
+  if (userInput) userInput.value = user;
+  if (passInput) passInput.value = pass;
+  window.SMS_GATEWAY_URL = url || null;
+  updateSmsUsageDisplay();
+}
+
+function updateSmsUsageDisplay() {
+  const el = document.getElementById('sms-used-today');
+  if (el) el.textContent = getSmsCountToday();
+}
+
+async function testSmsGateway() {
+  const url  = (document.getElementById('sms-gateway-url-input')?.value || '').trim().replace(/\/$/, '');
+  const user = document.getElementById('sms-gateway-user-input')?.value || 'smsgateway';
+  const pass = document.getElementById('sms-gateway-pass-input')?.value || 'demo';
+  const status = document.getElementById('sms-gateway-status');
+  if (!url) { if(status) { status.textContent = '⚠️ Enter URL first'; status.style.color = '#f59e0b'; } return; }
+  if(status) { status.textContent = '⏳ Testing connection...'; status.style.color = '#94a3b8'; }
+  try {
+    const resp = await fetch(`${url}/3rdparty/v1/messages`, {
+      method: 'GET',
+      headers: { 'Authorization': 'Basic ' + btoa(`${user}:${pass}`) },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (resp.ok || resp.status === 405) {
+      if(status) { status.textContent = '✅ Connected! SMS Gateway is running.'; status.style.color = '#10b981'; }
+    } else {
+      if(status) { status.textContent = `⚠️ Connected but got status ${resp.status} — check username/password.`; status.style.color = '#f59e0b'; }
+    }
+  } catch(e) {
+    if(status) { status.textContent = '❌ Could not connect. Check URL and make sure app is running.'; status.style.color = '#ef4444'; }
+  }
+}
+
+// ─── SMS / WhatsApp Split Panel ───────────────────────────────
+const SMS_DAILY_LIMIT = 100;
+
+function getSmsCountToday() {
+  const today = getLocalDateKey(new Date());
+  const key = 'sms-count-' + today;
+  return parseInt(localStorage.getItem(key) || '0');
+}
+
+function incrementSmsCount() {
+  const today = getLocalDateKey(new Date());
+  const key = 'sms-count-' + today;
+  const count = getSmsCountToday() + 1;
+  localStorage.setItem(key, count);
+  return count;
+}
+
+function showSmsSplitPanel() {
+  const today = getLocalDateKey(new Date());
+  const pending = state.attendances.filter(a => a.dateKey === today && !a.waSent && a.parentPhone);
+  const smsSentToday = getSmsCountToday();
+  const smsRemaining = Math.max(0, SMS_DAILY_LIMIT - smsSentToday);
+  const smsList = pending.slice(0, smsRemaining);
+  const waList  = pending.slice(smsRemaining);
+
+  const modal = document.createElement('div');
+  modal.id = 'sms-split-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML = `
+    <div style="background:#1e293b;border-radius:16px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto;padding:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2 style="color:#f1f5f9;font-size:18px;font-weight:700;">📨 Send Attendance Alerts</h2>
+        <button onclick="document.getElementById('sms-split-modal').remove()" style="color:#94a3b8;font-size:24px;background:none;border:none;cursor:pointer;">×</button>
+      </div>
+      <div style="display:flex;gap:12px;margin-bottom:20px;">
+        <div style="flex:1;background:#0f172a;border-radius:12px;padding:16px;text-align:center;">
+          <div style="color:#10b981;font-size:24px;font-weight:700;">${smsList.length}</div>
+          <div style="color:#94a3b8;font-size:12px;margin-top:4px;">📱 Via SMS</div>
+          <div style="color:#475569;font-size:11px;">${smsSentToday} sent today / ${SMS_DAILY_LIMIT} limit</div>
+        </div>
+        <div style="flex:1;background:#0f172a;border-radius:12px;padding:16px;text-align:center;">
+          <div style="color:#25d366;font-size:24px;font-weight:700;">${waList.length}</div>
+          <div style="color:#94a3b8;font-size:12px;margin-top:4px;">💬 Via WhatsApp</div>
+          <div style="color:#475569;font-size:11px;">SMS limit reached</div>
+        </div>
+      </div>
+      ${smsList.length ? `
+      <div style="margin-bottom:16px;">
+        <div style="color:#10b981;font-size:13px;font-weight:600;margin-bottom:8px;">📱 SMS List (${smsList.length})</div>
+        ${smsList.map((r,i) => `
+        <div style="display:flex;align-items:center;justify-content:space-between;background:#0f172a;border-radius:8px;padding:10px 14px;margin-bottom:6px;">
+          <div>
+            <span style="color:#f1f5f9;font-size:13px;font-weight:600;">${escapeHtml(r.name)}</span>
+            <span style="color:#64748b;font-size:12px;margin-left:8px;">${escapeHtml(r.parentPhone)}</span>
+          </div>
+          <button onclick="sendSmsAlert('${r.id}','${r.parentPhone}','${escapeHtml(r.name)}','${escapeHtml(r.formattedTime)}',this)"
+            style="background:rgba(16,185,129,0.15);color:#10b981;border:none;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:600;">
+            Send SMS
+          </button>
+        </div>`).join('')}
+      </div>` : ''}
+      ${waList.length ? `
+      <div>
+        <div style="color:#25d366;font-size:13px;font-weight:600;margin-bottom:8px;">💬 WhatsApp List (${waList.length})</div>
+        ${waList.map(r => `
+        <div style="display:flex;align-items:center;justify-content:space-between;background:#0f172a;border-radius:8px;padding:10px 14px;margin-bottom:6px;">
+          <div>
+            <span style="color:#f1f5f9;font-size:13px;font-weight:600;">${escapeHtml(r.name)}</span>
+            <span style="color:#64748b;font-size:12px;margin-left:8px;">${escapeHtml(r.parentPhone)}</span>
+          </div>
+          <button onclick="sendWaFromSplit('${r.id}',this)"
+            style="background:rgba(37,211,102,0.15);color:#25d366;border:none;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:600;">
+            Send WA
+          </button>
+        </div>`).join('')}
+      </div>` : ''}
+      ${!pending.length ? '<div style="color:#64748b;text-align:center;padding:24px;">No pending messages for today.</div>' : ''}
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function sendSmsAlert(recordId, phone, name, time, btn) {
+  const baseUrl = (window.SMS_GATEWAY_URL || '').trim().replace(/\/$/, '');
+  const user     = localStorage.getItem('sms-gateway-user') || 'smsgateway';
+  const pass     = localStorage.getItem('sms-gateway-pass') || 'demo';
+  const msg = `Dear Parent, ${name} has marked attendance today at ${time}. - Unacademy Gwalior`;
+
+  if (baseUrl) {
+    try {
+      // SMS Gateway for Android (capcom6) correct API format
+      await fetch(`${baseUrl}/3rdparty/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
+        },
+        body: JSON.stringify({
+          message: msg,
+          phoneNumbers: [phone],
+        }),
+      });
+    } catch(e) {
+      console.error('SMS send error:', e);
+    }
+  } else {
+    // Fallback: open native sms: link
+    window.open(`sms:${phone}?body=${encodeURIComponent(msg)}`, '_blank');
+  }
+  incrementSmsCount();
+  updateSmsUsageDisplay();
+  markWaSent(recordId);
+  btn.textContent = '✅ Sent';
+  btn.disabled = true;
+  btn.style.background = 'rgba(16,185,129,0.3)';
+}
+
+function sendWaFromSplit(recordId, btn) {
+  const rec = state.attendances.find(a => a.id === recordId);
+  if (rec) {
+    openWhatsappForRecord(rec);
+    markWaSent(rec.id);
+    btn.textContent = '✅ Sent';
+    btn.disabled = true;
+    btn.style.background = 'rgba(37,211,102,0.3)';
+  }
 }
 
 // ─── Records UI ───────────────────────────────────────────────
@@ -1874,6 +2094,7 @@ function showStudentsList() {
   document.getElementById("export-csv-btn")?.classList.add("hidden");
   document.getElementById("export-pdf-btn")?.classList.add("hidden");
   document.getElementById("wa-all-btn")?.classList.add("hidden");
+  document.getElementById("sms-split-btn")?.classList.add("hidden");
   // Clear search on tab switch
   const searchEl = document.getElementById("student-search-input");
   if (searchEl) searchEl.value = "";
@@ -1960,6 +2181,7 @@ function showAttendanceList() {
   document.getElementById("export-csv-btn")?.classList.remove("hidden");
   document.getElementById("export-pdf-btn")?.classList.remove("hidden");
   document.getElementById("wa-all-btn")?.classList.remove("hidden");
+  document.getElementById("sms-split-btn")?.classList.remove("hidden");
   renderAttendanceTable();
 }
 
@@ -2004,9 +2226,23 @@ function renderAttendanceTable() {
         </div>
       </td>
     `;
-    row.querySelector(".attendance-wa-btn")?.addEventListener("click", () => {
+    row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
       const rec = state.attendances.find(e => e.id === record.id);
-      if (rec) { openWhatsappForRecord(rec); markWaSent(rec.id); }
+      if (rec) {
+        openWhatsappForRecord(rec);
+        markWaSent(rec.id);
+        // Immediately update status cell
+        const statusCell = row.querySelectorAll("td")[5];
+        if (statusCell) {
+          statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+        }
+        // Immediately update the button itself to show sent
+        this.textContent = '✅ Sent';
+        this.style.background = 'rgba(16,185,129,0.2)';
+        this.style.color = '#10b981';
+        this.disabled = true;
+        this.style.cursor = 'default';
+      }
     });
     row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
       deleteAttendanceRecord(record.id);

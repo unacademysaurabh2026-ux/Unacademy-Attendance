@@ -1114,6 +1114,7 @@ async function runFrozenFrameRecognition(frozenCanvas) {
 
     state.attendances.unshift(record);
     saveData();
+    autoSendSms(record);
     playSound("match");
 
     // Show name strip on frozen frame immediately
@@ -1370,6 +1371,7 @@ async function runLiveRecognition() {
       };
       state.attendances.unshift(record);
       saveData();
+      autoSendSms(record);
       playSound("match");
       showQuickToast(record);
       state.attendancePhoto             = null;
@@ -1575,6 +1577,7 @@ async function captureAttendancePhoto() {
   // Auto-save without confirmation popup
   state.attendances.unshift(record);
   saveData();
+  autoSendSms(record);
   playSound("match");
   showQuickToast(record);
   state.attendancePhoto = null;
@@ -1656,6 +1659,7 @@ function confirmAttendanceYes() {
   if (!record) return;
   state.attendances.unshift(record);
   saveData();
+  autoSendSms(record);
   showSuccessModal(record);
   state.attendancePhoto = null;
   state.selectedAttendanceStudentId = null;
@@ -1933,16 +1937,15 @@ function updateSmsUsageDisplay() {
 }
 
 async function testSmsGateway() {
-  const url  = (document.getElementById('sms-gateway-url-input')?.value || '').trim().replace(/\/$/, '');
+  const proxyUrl = (document.getElementById('sms-gateway-url-input')?.value || '').trim().replace(/\/$/, '');
   const user = document.getElementById('sms-gateway-user-input')?.value || '';
   const pass = document.getElementById('sms-gateway-pass-input')?.value || '';
   const status = document.getElementById('sms-gateway-status');
-  if (!url) { if(status) { status.textContent = '⚠️ Enter URL first'; status.style.color = '#f59e0b'; } return; }
+  if (!proxyUrl) { if(status) { status.textContent = '⚠️ Enter Cloudflare Worker URL first'; status.style.color = '#f59e0b'; } return; }
   if (!user || !pass) { if(status) { status.textContent = '⚠️ Enter username and password'; status.style.color = '#f59e0b'; } return; }
   if(status) { status.textContent = '⏳ Testing connection...'; status.style.color = '#94a3b8'; }
   try {
-    // Use GET /messages to test auth without sending any SMS
-    const resp = await fetch(`${url}/3rdparty/v1/messages?limit=1`, {
+    const resp = await fetch(`${proxyUrl}/3rdparty/v1/messages?limit=1`, {
       method: 'GET',
       headers: { 'Authorization': 'Basic ' + btoa(`${user}:${pass}`) },
       signal: AbortSignal.timeout(8000),
@@ -1952,10 +1955,10 @@ async function testSmsGateway() {
     } else if (resp.status === 401) {
       if(status) { status.textContent = '⚠️ Wrong username or password.'; status.style.color = '#f59e0b'; }
     } else {
-      if(status) { status.textContent = `⚠️ Connected but got status ${resp.status}.`; status.style.color = '#f59e0b'; }
+      if(status) { status.textContent = `✅ Connected! (status ${resp.status})`; status.style.color = '#10b981'; }
     }
   } catch(e) {
-    if(status) { status.textContent = '❌ Could not connect. Check URL and make sure app is running.'; status.style.color = '#ef4444'; }
+    if(status) { status.textContent = '❌ Could not connect. Check Cloudflare Worker URL.'; status.style.color = '#ef4444'; }
   }
 }
 
@@ -2041,6 +2044,49 @@ function showSmsSplitPanel() {
   document.body.appendChild(modal);
 }
 
+// ─── Auto SMS on attendance mark ─────────────────────────────
+async function autoSendSms(record) {
+  const baseUrl = (window.SMS_GATEWAY_URL || '').trim().replace(/\/$/, '');
+  if (!baseUrl) return; // SMS Gateway not configured
+  if (!record.parentPhone) return; // no phone number
+  if (record.waSent) return; // already sent
+
+  const smsSentToday = getSmsCountToday();
+  if (smsSentToday >= SMS_DAILY_LIMIT) return; // limit reached, WA fallback handled manually
+
+  const user = localStorage.getItem('sms-gateway-user') || '';
+  const pass = localStorage.getItem('sms-gateway-pass') || '';
+  const msg  = `Dear Parent, ${record.name} has marked attendance today at ${record.formattedTime}. - Unacademy Gwalior`;
+
+  let formattedPhone = record.parentPhone.replace(/\D/g, '');
+  if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
+  else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
+
+  try {
+    const resp = await fetch(`${baseUrl}/3rdparty/v1/messages?skipPhoneValidation=true`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
+      },
+      body: JSON.stringify({
+        textMessage: { text: msg },
+        phoneNumbers: [formattedPhone],
+      }),
+    });
+    if (resp.ok || resp.status === 202) {
+      incrementSmsCount();
+      updateSmsUsageDisplay();
+      markWaSent(record.id);
+      console.log('✅ Auto SMS sent to', record.name);
+    } else {
+      console.error('Auto SMS failed:', resp.status, await resp.text());
+    }
+  } catch(e) {
+    console.error('Auto SMS error:', e);
+  }
+}
+
 async function sendSmsAlert(recordId, phone, name, time, btn) {
   const baseUrl = (window.SMS_GATEWAY_URL || '').trim().replace(/\/$/, '');
   const user    = localStorage.getItem('sms-gateway-user') || '';
@@ -2054,6 +2100,7 @@ async function sendSmsAlert(recordId, phone, name, time, btn) {
 
   if (baseUrl) {
     try {
+      // baseUrl is your Cloudflare Worker URL which proxies to api.sms-gate.app
       const resp = await fetch(`${baseUrl}/3rdparty/v1/messages?skipPhoneValidation=true`, {
         method: 'POST',
         headers: {

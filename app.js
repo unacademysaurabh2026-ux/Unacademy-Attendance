@@ -1914,9 +1914,15 @@ function saveSmsGatewayUrl(url) {
 }
 
 function loadSmsGatewayUrl() {
-  const url = localStorage.getItem('sms-gateway-url') || '';
-  const input = document.getElementById('sms-gateway-url-input');
-  if (input) input.value = url;
+  const url  = localStorage.getItem('sms-gateway-url') || '';
+  const user = localStorage.getItem('sms-gateway-user') || '';
+  const pass = localStorage.getItem('sms-gateway-pass') || '';
+  const urlInput  = document.getElementById('sms-gateway-url-input');
+  const userInput = document.getElementById('sms-gateway-user-input');
+  const passInput = document.getElementById('sms-gateway-pass-input');
+  if (urlInput)  urlInput.value  = url;
+  if (userInput) userInput.value = user;
+  if (passInput) passInput.value = pass;
   window.SMS_GATEWAY_URL = url || null;
   updateSmsUsageDisplay();
 }
@@ -1927,15 +1933,28 @@ function updateSmsUsageDisplay() {
 }
 
 async function testSmsGateway() {
-  const url = document.getElementById('sms-gateway-url-input')?.value.trim();
+  const proxyUrl = (document.getElementById('sms-gateway-url-input')?.value || '').trim().replace(/\/$/, '');
+  const user = document.getElementById('sms-gateway-user-input')?.value || '';
+  const pass = document.getElementById('sms-gateway-pass-input')?.value || '';
   const status = document.getElementById('sms-gateway-status');
-  if (!url) { if(status) status.textContent = '⚠️ Enter URL first'; return; }
-  if(status) status.textContent = '⏳ Testing...';
+  if (!proxyUrl) { if(status) { status.textContent = '⚠️ Enter Cloudflare Worker URL first'; status.style.color = '#f59e0b'; } return; }
+  if (!user || !pass) { if(status) { status.textContent = '⚠️ Enter username and password'; status.style.color = '#f59e0b'; } return; }
+  if(status) { status.textContent = '⏳ Testing connection...'; status.style.color = '#94a3b8'; }
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if(status) { status.textContent = '✅ Connected! SMS Gateway is running.'; status.style.color = '#10b981'; }
+    const resp = await fetch(`${proxyUrl}/3rdparty/v1/messages?limit=1`, {
+      method: 'GET',
+      headers: { 'Authorization': 'Basic ' + btoa(`${user}:${pass}`) },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (resp.ok) {
+      if(status) { status.textContent = '✅ Connected! SMS Gateway is working.'; status.style.color = '#10b981'; }
+    } else if (resp.status === 401) {
+      if(status) { status.textContent = '⚠️ Wrong username or password.'; status.style.color = '#f59e0b'; }
+    } else {
+      if(status) { status.textContent = `✅ Connected! (status ${resp.status})`; status.style.color = '#10b981'; }
+    }
   } catch(e) {
-    if(status) { status.textContent = '❌ Could not connect. Make sure SMS Gateway app is running and URL is correct.'; status.style.color = '#ef4444'; }
+    if(status) { status.textContent = '❌ Could not connect. Check Cloudflare Worker URL.'; status.style.color = '#ef4444'; }
   }
 }
 
@@ -2021,18 +2040,43 @@ function showSmsSplitPanel() {
   document.body.appendChild(modal);
 }
 
-function sendSmsAlert(recordId, phone, name, time, btn) {
-  // Opens SMS gateway app URL — replace with your SMS Gateway endpoint
-  const smsGatewayUrl = window.SMS_GATEWAY_URL || null;
-  const msg = `Dear Parent, ${name} has marked attendance today at ${time}. - Unacademy Gwalior`;
-  if (smsGatewayUrl) {
-    fetch(`${smsGatewayUrl}?phone=${phone}&message=${encodeURIComponent(msg)}`)
-      .catch(() => {});
+async function sendSmsAlert(recordId, phone, name, time, btn) {
+  const baseUrl = (window.SMS_GATEWAY_URL || '').trim().replace(/\/$/, '');
+  const user    = localStorage.getItem('sms-gateway-user') || '';
+  const pass    = localStorage.getItem('sms-gateway-pass') || '';
+  const msg     = `Dear Parent, ${name} has marked attendance today at ${time}. - Unacademy Gwalior`;
+
+  // Format phone number to E.164 (+91XXXXXXXXXX for India)
+  let formattedPhone = phone.replace(/\D/g, '');
+  if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
+  else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
+
+  if (baseUrl) {
+    try {
+      // baseUrl is your Cloudflare Worker URL which proxies to api.sms-gate.app
+      const resp = await fetch(`${baseUrl}/3rdparty/v1/messages?skipPhoneValidation=true`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
+        },
+        body: JSON.stringify({
+          textMessage: { text: msg },
+          phoneNumbers: [formattedPhone],
+        }),
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        console.error('SMS send failed:', resp.status, err);
+      }
+    } catch(e) {
+      console.error('SMS send error:', e);
+    }
   } else {
-    // Fallback: open sms: link on mobile
     window.open(`sms:${phone}?body=${encodeURIComponent(msg)}`, '_blank');
   }
   incrementSmsCount();
+  updateSmsUsageDisplay();
   markWaSent(recordId);
   btn.textContent = '✅ Sent';
   btn.disabled = true;

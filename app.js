@@ -1938,31 +1938,24 @@ async function testSmsGateway() {
   const pass = document.getElementById('sms-gateway-pass-input')?.value || '';
   const status = document.getElementById('sms-gateway-status');
   if (!url) { if(status) { status.textContent = '⚠️ Enter URL first'; status.style.color = '#f59e0b'; } return; }
+  if (!user || !pass) { if(status) { status.textContent = '⚠️ Enter username and password'; status.style.color = '#f59e0b'; } return; }
   if(status) { status.textContent = '⏳ Testing connection...'; status.style.color = '#94a3b8'; }
   try {
-    // Send a real test SMS to yourself to verify connection
-    const resp = await fetch(`${url}/3rdparty/v1/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
-      },
-      body: JSON.stringify({
-        message: 'SMS Gateway test from FaceScan Attendance. Connection successful!',
-        phoneNumbers: ['0000000000'], // dummy number just to test auth
-      }),
+    // Use GET /messages to test auth without sending any SMS
+    const resp = await fetch(`${url}/3rdparty/v1/messages?limit=1`, {
+      method: 'GET',
+      headers: { 'Authorization': 'Basic ' + btoa(`${user}:${pass}`) },
       signal: AbortSignal.timeout(8000),
     });
-    const data = await resp.json().catch(() => ({}));
-    if (resp.ok || resp.status === 202) {
+    if (resp.ok) {
       if(status) { status.textContent = '✅ Connected! SMS Gateway is working.'; status.style.color = '#10b981'; }
     } else if (resp.status === 401) {
       if(status) { status.textContent = '⚠️ Wrong username or password.'; status.style.color = '#f59e0b'; }
     } else {
-      if(status) { status.textContent = `✅ Connected! (status ${resp.status})`; status.style.color = '#10b981'; }
+      if(status) { status.textContent = `⚠️ Connected but got status ${resp.status}.`; status.style.color = '#f59e0b'; }
     }
   } catch(e) {
-    if(status) { status.textContent = '❌ Could not connect. Check URL and credentials.'; status.style.color = '#ef4444'; }
+    if(status) { status.textContent = '❌ Could not connect. Check URL and make sure app is running.'; status.style.color = '#ef4444'; }
   }
 }
 
@@ -2050,29 +2043,36 @@ function showSmsSplitPanel() {
 
 async function sendSmsAlert(recordId, phone, name, time, btn) {
   const baseUrl = (window.SMS_GATEWAY_URL || '').trim().replace(/\/$/, '');
-  const user     = localStorage.getItem('sms-gateway-user') || 'smsgateway';
-  const pass     = localStorage.getItem('sms-gateway-pass') || 'demo';
-  const msg = `Dear Parent, ${name} has marked attendance today at ${time}. - Unacademy Gwalior`;
+  const user    = localStorage.getItem('sms-gateway-user') || '';
+  const pass    = localStorage.getItem('sms-gateway-pass') || '';
+  const msg     = `Dear Parent, ${name} has marked attendance today at ${time}. - Unacademy Gwalior`;
+
+  // Format phone number to E.164 (+91XXXXXXXXXX for India)
+  let formattedPhone = phone.replace(/\D/g, '');
+  if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
+  else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
 
   if (baseUrl) {
     try {
-      // SMS Gateway for Android (capcom6) correct API format
-      await fetch(`${baseUrl}/3rdparty/v1/messages`, {
+      const resp = await fetch(`${baseUrl}/3rdparty/v1/messages?skipPhoneValidation=true`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
         },
         body: JSON.stringify({
-          message: msg,
-          phoneNumbers: [phone],
+          textMessage: { text: msg },
+          phoneNumbers: [formattedPhone],
         }),
       });
+      if (!resp.ok) {
+        const err = await resp.text();
+        console.error('SMS send failed:', resp.status, err);
+      }
     } catch(e) {
       console.error('SMS send error:', e);
     }
   } else {
-    // Fallback: open native sms: link
     window.open(`sms:${phone}?body=${encodeURIComponent(msg)}`, '_blank');
   }
   incrementSmsCount();

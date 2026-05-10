@@ -3255,127 +3255,104 @@ function importBackup() {
     const file = event.target.files?.[0];
     if (!file) { document.body.removeChild(input); return; }
     const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const backup = JSON.parse(e.target.result);
-        if (!backup?.data?.students) {
-          alert("Invalid backup file."); return;
-        }
-
-        const backupStudents   = backup.data.students   || [];
-        const backupAttendance = backup.data.attendance || [];
-        const exportedOn = backup.exportedAt ? new Date(backup.exportedAt).toLocaleString("en-IN") : "unknown date";
-
-        // Find new students (not already in state)
-        const existingIds = new Set(state.students.map(s => s.id));
-        const newStudents = backupStudents.filter(s => !existingIds.has(s.id));
-        const newAttendance = backupAttendance.filter(a => !state.attendances.find(e => e.id === a.id));
-
-        const ok = confirm(
-          `Smart Merge Import\n\n` +
-          `Backup date: ${exportedOn}\n` +
-          `Backup students: ${backupStudents.length}\n` +
-          `Already on this device: ${existingIds.size}\n` +
-          `New students to add: ${newStudents.length}\n` +
-          `New attendance records: ${newAttendance.length}\n\n` +
-          `Tap OK to merge (existing data will NOT be deleted).`
-        );
-        if (!ok) return;
-
-        // Show progress UI
-        const overlay = document.createElement('div');
-        overlay.id = 'import-progress-overlay';
-        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
-        overlay.innerHTML = \`
-          <div style="color:#f1f5f9;font-size:18px;font-weight:700;">Importing students...</div>
-          <div style="width:300px;background:#1e293b;border-radius:99px;height:12px;overflow:hidden;">
-            <div id="import-progress-bar" style="height:100%;background:#0ea5e9;width:0%;transition:width 0.3s;border-radius:99px;"></div>
-          </div>
-          <div id="import-progress-text" style="color:#94a3b8;font-size:14px;">0 / ${newStudents.length}</div>
-        \`;
-        document.body.appendChild(overlay);
-
-        // Merge students one by one to avoid quota issues
-        for (let i = 0; i < newStudents.length; i++) {
-          state.students.push(newStudents[i]);
-
-          // Save students without attendance to avoid quota — save in chunks
-          if (i % 5 === 0 || i === newStudents.length - 1) {
-            try {
-              localStorage.setItem(STORAGE_KEYS.students, JSON.stringify(state.students));
-            } catch(qErr) {
-              // If quota hit, save students without descriptors temporarily
-              console.warn('Quota hit at student', i, '- saving without heavy data');
-              const light = state.students.map(s => ({ ...s, descriptors: s.descriptors?.slice(0,2) || [] }));
-              localStorage.setItem(STORAGE_KEYS.students, JSON.stringify(light));
-            }
-          }
-
-          // Update progress
-          const pct = Math.round(((i + 1) / newStudents.length) * 100);
-          const bar = document.getElementById('import-progress-bar');
-          const txt = document.getElementById('import-progress-text');
-          if (bar) bar.style.width = pct + '%';
-          if (txt) txt.textContent = \`\${i + 1} / \${newStudents.length} students\`;
-
-          // Small delay to allow UI to update
-          if (i % 10 === 0) await new Promise(r => setTimeout(r, 50));
-        }
-
-        // Merge attendance
-        if (newAttendance.length) {
-          state.attendances.push(...newAttendance);
-          try {
-            const attendanceLight = state.attendances.map(a => ({ ...a, scanPhoto: '' }));
-            localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(attendanceLight));
-          } catch(e) { console.warn('Attendance save failed:', e); }
-        }
-
-        // Settings
-        if (backup.data.settings && Object.keys(backup.data.settings).length) {
-          localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(backup.data.settings));
-        }
-
-        document.body.removeChild(overlay);
-        loadData();
-        updateDashboardStats();
-        renderStudentsGrid();
-        renderAttendanceTable();
-        renderStaticLabels();
-
-        // Sync new students to Google Sheet one by one
-        if (typeof syncStudentToSheets === 'function' && newStudents.length > 0) {
-          const syncOverlay = document.createElement('div');
-          syncOverlay.id = 'sync-progress-overlay';
-          syncOverlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
-          syncOverlay.innerHTML = '<div style="color:#f1f5f9;font-size:18px;font-weight:700;">Syncing to Google Sheets...</div><div style="width:300px;background:#1e293b;border-radius:99px;height:12px;overflow:hidden;"><div id=\"sync-progress-bar\" style=\"height:100%;background:#10b981;width:0%;transition:width 0.3s;border-radius:99px;\"></div></div><div id=\"sync-progress-text\" style=\"color:#94a3b8;font-size:14px;\">0 / ' + newStudents.length + '</div>';
-          document.body.appendChild(syncOverlay);
-          for (let si = 0; si < newStudents.length; si++) {
-            const s = newStudents[si];
-            await syncStudentToSheets(s);
-            if (typeof syncFaceDataToSheets === 'function') await syncFaceDataToSheets(s);
-            const pct = Math.round(((si + 1) / newStudents.length) * 100);
-            const bar = document.getElementById('sync-progress-bar');
-            const txt = document.getElementById('sync-progress-text');
-            if (bar) bar.style.width = pct + '%';
-            if (txt) txt.textContent = (si + 1) + ' / ' + newStudents.length + ' synced to Sheet';
-            await new Promise(r => setTimeout(r, 150));
-          }
-          const so = document.getElementById('sync-progress-overlay');
-          if (so) document.body.removeChild(so);
-        }
-        alert(\`Import complete!\n\nAdded: \${newStudents.length} new students\nAdded: \${newAttendance.length} new attendance records\nTotal students: \${state.students.length}\`);
-
-      } catch (err) {
-        const ov = document.getElementById('import-progress-overlay');
-        if (ov) document.body.removeChild(ov);
-        alert("Could not read the backup file.\n\nError: " + err.message);
-      }
-    };
+    reader.onload = (e) => { handleImportBackup(e.target.result); };
     reader.readAsText(file);
     document.body.removeChild(input);
   };
   input.click();
+}
+
+async function handleImportBackup(jsonText) {
+  try {
+    const backup = JSON.parse(jsonText);
+    if (!backup?.data?.students) { alert("Invalid backup file."); return; }
+
+    const backupStudents   = backup.data.students   || [];
+    const backupAttendance = backup.data.attendance || [];
+    const exportedOn = backup.exportedAt ? new Date(backup.exportedAt).toLocaleString("en-IN") : "unknown date";
+
+    const existingIds   = new Set(state.students.map(s => s.id));
+    const newStudents   = backupStudents.filter(s => !existingIds.has(s.id));
+    const existingAttIds = new Set(state.attendances.map(a => a.id));
+    const newAttendance = backupAttendance.filter(a => !existingAttIds.has(a.id));
+
+    const ok = confirm(
+      "Smart Merge Import\n\n" +
+      "Backup date: " + exportedOn + "\n" +
+      "Backup students: " + backupStudents.length + "\n" +
+      "Already on device: " + existingIds.size + "\n" +
+      "New students to add: " + newStudents.length + "\n" +
+      "New attendance records: " + newAttendance.length + "\n\n" +
+      "Tap OK to merge (existing data will NOT be deleted)."
+    );
+    if (!ok) return;
+
+    // Show progress overlay
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;font-family:Inter,sans-serif;";
+    overlay.innerHTML =
+      "<div style=\"color:#f1f5f9;font-size:18px;font-weight:700;\">📥 Importing students...</div>" +
+      "<div style=\"width:300px;background:#1e293b;border-radius:99px;height:12px;overflow:hidden;\">" +
+        "<div id=\"imp-bar\" style=\"height:100%;background:#0ea5e9;width:0%;transition:width 0.2s;border-radius:99px;\"></div>" +
+      "</div>" +
+      "<div id=\"imp-txt\" style=\"color:#94a3b8;font-size:14px;\">0 / " + newStudents.length + "</div>";
+    document.body.appendChild(overlay);
+
+    // Import students one by one
+    for (let i = 0; i < newStudents.length; i++) {
+      state.students.push(newStudents[i]);
+      if (i % 5 === 0 || i === newStudents.length - 1) {
+        try {
+          localStorage.setItem(STORAGE_KEYS.students, JSON.stringify(state.students));
+        } catch(q) {
+          const light = state.students.map(s => Object.assign({}, s, { descriptors: (s.descriptors || []).slice(0, 2) }));
+          try { localStorage.setItem(STORAGE_KEYS.students, JSON.stringify(light)); } catch(q2) {}
+        }
+      }
+      document.getElementById("imp-bar").style.width = Math.round((i + 1) / newStudents.length * 100) + "%";
+      document.getElementById("imp-txt").textContent = (i + 1) + " / " + newStudents.length + " students";
+      if (i % 10 === 0) await new Promise(r => setTimeout(r, 30));
+    }
+
+    // Merge attendance
+    if (newAttendance.length) {
+      state.attendances.push(...newAttendance);
+      try {
+        localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(state.attendances.map(a => Object.assign({}, a, { scanPhoto: "" }))));
+      } catch(q) {}
+    }
+
+    if (backup.data.settings && Object.keys(backup.data.settings).length) {
+      localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(backup.data.settings));
+    }
+
+    overlay.innerHTML =
+      "<div style=\"color:#f1f5f9;font-size:18px;font-weight:700;\">☁️ Syncing to Google Sheets...</div>" +
+      "<div style=\"width:300px;background:#1e293b;border-radius:99px;height:12px;overflow:hidden;\">" +
+        "<div id=\"sync-bar\" style=\"height:100%;background:#10b981;width:0%;transition:width 0.2s;border-radius:99px;\"></div>" +
+      "</div>" +
+      "<div id=\"sync-txt\" style=\"color:#94a3b8;font-size:14px;\">0 / " + newStudents.length + "</div>";
+
+    // Sync each new student to Google Sheet
+    if (typeof syncStudentToSheets === "function") {
+      for (let i = 0; i < newStudents.length; i++) {
+        await syncStudentToSheets(newStudents[i]);
+        if (typeof syncFaceDataToSheets === "function") await syncFaceDataToSheets(newStudents[i]);
+        document.getElementById("sync-bar").style.width = Math.round((i + 1) / newStudents.length * 100) + "%";
+        document.getElementById("sync-txt").textContent = (i + 1) + " / " + newStudents.length + " synced";
+        await new Promise(r => setTimeout(r, 120));
+      }
+    }
+
+    document.body.removeChild(overlay);
+    loadData(); updateDashboardStats(); renderStudentsGrid(); renderAttendanceTable(); renderStaticLabels();
+    alert("Import complete!\n\nAdded: " + newStudents.length + " new students\nAdded: " + newAttendance.length + " new attendance records\nTotal students: " + state.students.length + "\n\nAll synced to Google Sheets!");
+
+  } catch(err) {
+    const ov = document.querySelector("[style*='z-index:99999']");
+    if (ov) document.body.removeChild(ov);
+    alert("Could not read the backup file.\n\nError: " + err.message);
+  }
 }
 
 // ─── Reset / Clear ────────────────────────────────────────────

@@ -190,31 +190,16 @@
 
         <!-- SMS Gateway Settings -->
         <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5" id="sms-gateway-panel">
-          <h3 class="font-semibold text-base flex items-center gap-2 mb-1">📱 SMS Gateway Settings</h3>
-          <p class="text-slate-400 text-sm mb-4">Install <b>SMS Gateway for Android</b> by capcom6 from Play Store. Open the app → Start Service → copy the URL and credentials shown.</p>
-          <div class="space-y-3">
-            <div class="flex gap-3 items-center">
-              <input type="text" id="sms-gateway-url-input" placeholder="http://192.168.1.x:8080"
-                class="flex-1 bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-xl px-4 py-2.5 text-sm outline-none"
-                oninput="saveSmsGatewayUrl(this.value)">
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <input type="text" id="sms-gateway-user-input" placeholder="Username (default: smsgateway)"
-                class="bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-xl px-4 py-2.5 text-sm outline-none"
-                oninput="localStorage.setItem('sms-gateway-user', this.value)">
-              <input type="password" id="sms-gateway-pass-input" placeholder="Password (from app)"
-                class="bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-xl px-4 py-2.5 text-sm outline-none"
-                oninput="localStorage.setItem('sms-gateway-pass', this.value)">
-            </div>
-            <button onclick="testSmsGateway()"
-              class="w-full px-4 py-2.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 rounded-xl text-sm font-semibold">
-              🔗 Test Connection
-            </button>
+          <div class="flex items-center justify-between mb-1">
+            <h3 class="font-semibold text-base flex items-center gap-2">📱 SMS Gateway Settings</h3>
+            <button onclick="addSmsGatewaySlot()" class="px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 rounded-xl text-xs font-semibold">+ Add Device</button>
           </div>
+          <p class="text-slate-400 text-sm mb-4">Add multiple devices — when one reaches 100 SMS/day limit, next device takes over automatically.</p>
+          <div id="sms-gateway-slots" class="space-y-4"></div>
           <div id="sms-gateway-status" class="mt-2 text-xs text-slate-500"></div>
           <div class="mt-3 bg-slate-800 rounded-xl p-3">
             <p class="text-xs text-slate-400 font-semibold mb-1">📊 SMS Usage Today</p>
-            <p class="text-sm"><span id="sms-used-today" class="text-sky-400 font-bold">0</span> / <span class="text-slate-400">100</span> SMS sent</p>
+            <p class="text-sm"><span id="sms-used-today" class="text-sky-400 font-bold">0</span> / <span class="text-slate-400" id="sms-total-limit">100</span> SMS sent</p>
           </div>
         </div>
 
@@ -631,9 +616,40 @@
         </div>
 
         <div id="attendance-list-view" class="hidden">
+          <!-- Search, Sort, Filter bar -->
+          <div class="flex flex-wrap gap-2 mb-4 items-center">
+            <div class="relative flex-1 min-w-[180px]">
+              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">🔍</span>
+              <input id="att-search" type="text" placeholder="Search name, roll, class..."
+                oninput="renderAttendanceTable()"
+                class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-100 placeholder-slate-500">
+            </div>
+            <select id="att-filter-class" onchange="renderAttendanceTable()"
+              class="bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none">
+              <option value="">All Classes</option>
+            </select>
+            <select id="att-filter-date" onchange="renderAttendanceTable()"
+              class="bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none">
+              <option value="">All Dates</option>
+            </select>
+            <select id="att-filter-wa" onchange="renderAttendanceTable()"
+              class="bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none">
+              <option value="">All WA Status</option>
+              <option value="sent">✅ WA Sent</option>
+              <option value="pending">⏳ Not Sent</option>
+            </select>
+            <select id="att-sort" onchange="renderAttendanceTable()"
+              class="bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none">
+              <option value="newest">⬇ Newest First</option>
+              <option value="oldest">⬆ Oldest First</option>
+              <option value="name">🔤 Name A-Z</option>
+              <option value="class">📚 Class</option>
+            </select>
+            <button onclick="resetAttendanceFilters()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-xl text-sm">✕ Reset</button>
+          </div>
+          <div id="att-results-count" class="text-xs text-slate-500 mb-2"></div>
           <div class="bg-slate-900 rounded-3xl overflow-hidden">
             <div class="overflow-x-auto">
-              <!-- FIX #4: Added WA Sent column -->
               <table class="w-full min-w-[700px]">
                 <thead>
                   <tr class="border-b border-slate-700 text-slate-400 text-xs">

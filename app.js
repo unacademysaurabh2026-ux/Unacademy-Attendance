@@ -1910,73 +1910,159 @@ function sendWhatsAppToAll() {
   });
 }
 
-// ─── SMS Gateway Settings ────────────────────────────────────
+// ─── SMS Gateway Multi-Device Settings ───────────────────────
+// Each slot: { url, user, pass, label }
+function getSmsSlots() {
+  return JSON.parse(localStorage.getItem('sms-gateway-slots') || '[]');
+}
+function saveSmsSlots(slots) {
+  localStorage.setItem('sms-gateway-slots', JSON.stringify(slots));
+}
+
+// Legacy compat
 function saveSmsGatewayUrl(url) {
-  localStorage.setItem('sms-gateway-url', url.trim());
-  window.SMS_GATEWAY_URL = url.trim() || null;
+  const slots = getSmsSlots();
+  if (slots.length > 0) { slots[0].url = url.trim(); saveSmsSlots(slots); }
   updateSmsUsageDisplay();
 }
 
+function addSmsGatewaySlot() {
+  const slots = getSmsSlots();
+  slots.push({ url: '', user: '', pass: '', label: 'Device ' + (slots.length + 1) });
+  saveSmsSlots(slots);
+  renderSmsSlots();
+}
+
+function removeSmsSlot(idx) {
+  const slots = getSmsSlots();
+  slots.splice(idx, 1);
+  saveSmsSlots(slots);
+  renderSmsSlots();
+  updateSmsUsageDisplay();
+}
+
+function updateSmsSlot(idx, field, value) {
+  const slots = getSmsSlots();
+  if (slots[idx]) { slots[idx][field] = value; saveSmsSlots(slots); }
+}
+
+function renderSmsSlots() {
+  const container = document.getElementById('sms-gateway-slots');
+  if (!container) return;
+  const slots = getSmsSlots();
+  if (slots.length === 0) {
+    container.innerHTML = '<p class="text-slate-500 text-sm text-center py-2">No devices added. Click "+ Add Device" to add one.</p>';
+    updateSmsUsageDisplay();
+    return;
+  }
+  container.innerHTML = slots.map((s, i) => {
+    const todayUsed = getSmsCountTodayForSlot(i);
+    const isActive  = todayUsed < SMS_DAILY_LIMIT;
+    return '<div class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-2">' +
+      '<div class="flex items-center justify-between">' +
+        '<input value="' + escapeHtml(s.label || 'Device ' + (i+1)) + '" oninput="updateSmsSlot(' + i + ',\'label\',this.value)" placeholder="Device name" class="bg-transparent text-sm font-semibold text-slate-200 outline-none flex-1">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="text-xs px-2 py-0.5 rounded-full ' + (isActive ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400') + '">' + (isActive ? '✅ Active' : '🔴 Limit reached') + '</span>' +
+          '<button onclick="removeSmsSlot(' + i + ')" class="text-red-400 text-xs hover:text-red-300">✕</button>' +
+        '</div>' +
+      '</div>' +
+      '<input type="text" value="' + escapeHtml(s.url) + '" oninput="updateSmsSlot(' + i + ',\'url\',this.value)" placeholder="https://your-worker.workers.dev" class="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-xs outline-none text-slate-200">' +
+      '<div class="grid grid-cols-2 gap-2">' +
+        '<input type="text" value="' + escapeHtml(s.user) + '" oninput="updateSmsSlot(' + i + ',\'user\',this.value)" placeholder="Username" class="bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-xs outline-none text-slate-200">' +
+        '<input type="password" value="' + escapeHtml(s.pass) + '" oninput="updateSmsSlot(' + i + ',\'pass\',this.value)" placeholder="Password" class="bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-xs outline-none text-slate-200">' +
+      '</div>' +
+      '<div class="flex items-center justify-between">' +
+        '<span class="text-xs text-slate-500">' + todayUsed + ' / ' + SMS_DAILY_LIMIT + ' SMS today</span>' +
+        '<button onclick="testSmsGatewaySlot(' + i + ')" class="text-xs px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 rounded-lg">🔗 Test</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  // Update total limit display
+  const totalEl = document.getElementById('sms-total-limit');
+  if (totalEl) totalEl.textContent = slots.length * SMS_DAILY_LIMIT;
+}
+
+async function testSmsGatewaySlot(idx) {
+  const slots = getSmsSlots();
+  const s = slots[idx];
+  if (!s || !s.url) { alert('Enter URL first'); return; }
+  const status = document.getElementById('sms-gateway-status');
+  if (status) { status.textContent = 'Testing Device ' + (idx+1) + '...'; status.style.color = '#94a3b8'; }
+  try {
+    const resp = await fetch(s.url.trim().replace(/\/$/, '') + '/3rdparty/v1/messages?limit=1', {
+      method: 'GET',
+      headers: { 'Authorization': 'Basic ' + btoa((s.user||'') + ':' + (s.pass||'')) },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (resp.ok) {
+      if (status) { status.textContent = '✅ Device ' + (idx+1) + ' connected!'; status.style.color = '#10b981'; }
+    } else if (resp.status === 401) {
+      if (status) { status.textContent = '⚠️ Wrong username or password.'; status.style.color = '#f59e0b'; }
+    } else {
+      if (status) { status.textContent = '✅ Device ' + (idx+1) + ' connected! (status ' + resp.status + ')'; status.style.color = '#10b981'; }
+    }
+  } catch(e) {
+    if (status) { status.textContent = '❌ Could not connect Device ' + (idx+1) + '.'; status.style.color = '#ef4444'; }
+  }
+}
+
+function getSmsCountTodayForSlot(slotIdx) {
+  const today = getLocalDateKey(new Date());
+  return parseInt(localStorage.getItem('sms-count-' + today + '-slot' + slotIdx) || '0');
+}
+
+function incrementSmsCountForSlot(slotIdx) {
+  const today = getLocalDateKey(new Date());
+  const key = 'sms-count-' + today + '-slot' + slotIdx;
+  const count = parseInt(localStorage.getItem(key) || '0') + 1;
+  localStorage.setItem(key, count);
+}
+
+function getActiveSlot() {
+  const slots = getSmsSlots();
+  for (let i = 0; i < slots.length; i++) {
+    if (getSmsCountTodayForSlot(i) < SMS_DAILY_LIMIT && slots[i].url) return { slot: slots[i], idx: i };
+  }
+  return null;
+}
+
 function loadSmsGatewayUrl() {
-  const url  = localStorage.getItem('sms-gateway-url') || '';
-  const user = localStorage.getItem('sms-gateway-user') || '';
-  const pass = localStorage.getItem('sms-gateway-pass') || '';
-  const urlInput  = document.getElementById('sms-gateway-url-input');
-  const userInput = document.getElementById('sms-gateway-user-input');
-  const passInput = document.getElementById('sms-gateway-pass-input');
-  if (urlInput)  urlInput.value  = url;
-  if (userInput) userInput.value = user;
-  if (passInput) passInput.value = pass;
-  window.SMS_GATEWAY_URL = url || null;
+  // Migrate legacy single-device settings to new multi-slot system
+  const legacyUrl  = localStorage.getItem('sms-gateway-url')  || '';
+  const legacyUser = localStorage.getItem('sms-gateway-user') || '';
+  const legacyPass = localStorage.getItem('sms-gateway-pass') || '';
+  if (legacyUrl && getSmsSlots().length === 0) {
+    saveSmsSlots([{ url: legacyUrl, user: legacyUser, pass: legacyPass, label: 'Device 1' }]);
+    localStorage.removeItem('sms-gateway-url');
+  }
+  renderSmsSlots();
   updateSmsUsageDisplay();
 }
 
 function updateSmsUsageDisplay() {
   const el = document.getElementById('sms-used-today');
   if (el) el.textContent = getSmsCountToday();
+  renderSmsSlots();
 }
 
-async function testSmsGateway() {
-  const proxyUrl = (document.getElementById('sms-gateway-url-input')?.value || '').trim().replace(/\/$/, '');
-  const user = document.getElementById('sms-gateway-user-input')?.value || '';
-  const pass = document.getElementById('sms-gateway-pass-input')?.value || '';
-  const status = document.getElementById('sms-gateway-status');
-  if (!proxyUrl) { if(status) { status.textContent = '⚠️ Enter Cloudflare Worker URL first'; status.style.color = '#f59e0b'; } return; }
-  if (!user || !pass) { if(status) { status.textContent = '⚠️ Enter username and password'; status.style.color = '#f59e0b'; } return; }
-  if(status) { status.textContent = '⏳ Testing connection...'; status.style.color = '#94a3b8'; }
-  try {
-    const resp = await fetch(`${proxyUrl}/3rdparty/v1/messages?limit=1`, {
-      method: 'GET',
-      headers: { 'Authorization': 'Basic ' + btoa(`${user}:${pass}`) },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (resp.ok) {
-      if(status) { status.textContent = '✅ Connected! SMS Gateway is working.'; status.style.color = '#10b981'; }
-    } else if (resp.status === 401) {
-      if(status) { status.textContent = '⚠️ Wrong username or password.'; status.style.color = '#f59e0b'; }
-    } else {
-      if(status) { status.textContent = `✅ Connected! (status ${resp.status})`; status.style.color = '#10b981'; }
-    }
-  } catch(e) {
-    if(status) { status.textContent = '❌ Could not connect. Check Cloudflare Worker URL.'; status.style.color = '#ef4444'; }
-  }
-}
+// testSmsGateway replaced by testSmsGatewaySlot per-device
 
 // ─── SMS / WhatsApp Split Panel ───────────────────────────────
 const SMS_DAILY_LIMIT = 100;
 
 function getSmsCountToday() {
-  const today = getLocalDateKey(new Date());
-  const key = 'sms-count-' + today;
-  return parseInt(localStorage.getItem(key) || '0');
+  const slots = getSmsSlots();
+  if (slots.length === 0) {
+    const today = getLocalDateKey(new Date());
+    return parseInt(localStorage.getItem('sms-count-' + today) || '0');
+  }
+  let total = 0;
+  for (let i = 0; i < slots.length; i++) total += getSmsCountTodayForSlot(i);
+  return total;
 }
 
 function incrementSmsCount() {
-  const today = getLocalDateKey(new Date());
-  const key = 'sms-count-' + today;
-  const count = getSmsCountToday() + 1;
-  localStorage.setItem(key, count);
-  return count;
+  // Increment is now handled per-slot in autoSendSms
 }
 
 function showSmsSplitPanel() {
@@ -2046,41 +2132,38 @@ function showSmsSplitPanel() {
 
 // ─── Auto SMS on attendance mark ─────────────────────────────
 async function autoSendSms(record) {
-  const baseUrl = (window.SMS_GATEWAY_URL || '').trim().replace(/\/$/, '');
-  if (!baseUrl) return; // SMS Gateway not configured
-  if (!record.parentPhone) return; // no phone number
-  if (record.waSent) return; // already sent
+  if (!record.parentPhone) return;
+  if (record.waSent) return;
 
-  const smsSentToday = getSmsCountToday();
-  if (smsSentToday >= SMS_DAILY_LIMIT) return; // limit reached, WA fallback handled manually
+  const activeSlotInfo = getActiveSlot();
+  if (!activeSlotInfo) return; // all slots exhausted
 
-  const user = localStorage.getItem('sms-gateway-user') || '';
-  const pass = localStorage.getItem('sms-gateway-pass') || '';
-  const msg  = `Dear Parent, ${record.name} has marked attendance today at ${record.formattedTime}. - Unacademy Gwalior`;
+  const { slot, idx } = activeSlotInfo;
+  const baseUrl = slot.url.trim().replace(/\/$/, '');
+  const user = slot.user || '';
+  const pass = slot.pass || '';
+  const msg  = 'Dear Parent, ' + record.name + ' has marked attendance today at ' + record.formattedTime + '. - Unacademy Gwalior';
 
   let formattedPhone = record.parentPhone.replace(/\D/g, '');
   if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
   else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
 
   try {
-    const resp = await fetch(`${baseUrl}/3rdparty/v1/messages?skipPhoneValidation=true`, {
+    const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
+        'Authorization': 'Basic ' + btoa(user + ':' + pass),
       },
-      body: JSON.stringify({
-        textMessage: { text: msg },
-        phoneNumbers: [formattedPhone],
-      }),
+      body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
     });
     if (resp.ok || resp.status === 202) {
-      incrementSmsCount();
+      incrementSmsCountForSlot(idx);
       updateSmsUsageDisplay();
       markWaSent(record.id);
-      console.log('✅ Auto SMS sent to', record.name);
+      console.log('Auto SMS sent via Device ' + (idx+1) + ' to', record.name);
     } else {
-      console.error('Auto SMS failed:', resp.status, await resp.text());
+      console.error('Auto SMS failed:', resp.status);
     }
   } catch(e) {
     console.error('Auto SMS error:', e);
@@ -2088,41 +2171,30 @@ async function autoSendSms(record) {
 }
 
 async function sendSmsAlert(recordId, phone, name, time, btn) {
-  const baseUrl = (window.SMS_GATEWAY_URL || '').trim().replace(/\/$/, '');
-  const user    = localStorage.getItem('sms-gateway-user') || '';
-  const pass    = localStorage.getItem('sms-gateway-pass') || '';
-  const msg     = `Dear Parent, ${name} has marked attendance today at ${time}. - Unacademy Gwalior`;
-
-  // Format phone number to E.164 (+91XXXXXXXXXX for India)
+  const activeSlotInfo = getActiveSlot();
+  const msg = 'Dear Parent, ' + name + ' has marked attendance today at ' + time + '. - Unacademy Gwalior';
   let formattedPhone = phone.replace(/\D/g, '');
   if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
   else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
 
-  if (baseUrl) {
+  if (activeSlotInfo) {
+    const { slot, idx } = activeSlotInfo;
+    const baseUrl = slot.url.trim().replace(/\/$/, '');
     try {
-      // baseUrl is your Cloudflare Worker URL which proxies to api.sms-gate.app
-      const resp = await fetch(`${baseUrl}/3rdparty/v1/messages?skipPhoneValidation=true`, {
+      const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Basic ' + btoa(`${user}:${pass}`),
-        },
-        body: JSON.stringify({
-          textMessage: { text: msg },
-          phoneNumbers: [formattedPhone],
-        }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa((slot.user||'') + ':' + (slot.pass||'')) },
+        body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
       });
-      if (!resp.ok) {
-        const err = await resp.text();
-        console.error('SMS send failed:', resp.status, err);
+      if (resp.ok || resp.status === 202) {
+        incrementSmsCountForSlot(idx);
+      } else {
+        console.error('SMS send failed:', resp.status);
       }
-    } catch(e) {
-      console.error('SMS send error:', e);
-    }
+    } catch(e) { console.error('SMS send error:', e); }
   } else {
-    window.open(`sms:${phone}?body=${encodeURIComponent(msg)}`, '_blank');
+    window.open('sms:' + phone + '?body=' + encodeURIComponent(msg), '_blank');
   }
-  incrementSmsCount();
   updateSmsUsageDisplay();
   markWaSent(recordId);
   btn.textContent = '✅ Sent';
@@ -2243,6 +2315,26 @@ function showAttendanceList() {
   renderAttendanceTable();
 }
 
+function populateAttendanceFilters() {
+  const classSet = new Set(state.attendances.map(a => a.class).filter(Boolean));
+  const dateSet  = new Set(state.attendances.map(a => a.dateKey).filter(Boolean));
+  const classEl  = document.getElementById('att-filter-class');
+  const dateEl   = document.getElementById('att-filter-date');
+  if (!classEl || !dateEl) return;
+  const prevClass = classEl.value; const prevDate = dateEl.value;
+  classEl.innerHTML = '<option value="">All Classes</option>' + [...classSet].sort().map(c => '<option value="' + c + '">' + c + '</option>').join('');
+  dateEl.innerHTML  = '<option value="">All Dates</option>'  + [...dateSet].sort().reverse().map(d => '<option value="' + d + '">' + d + '</option>').join('');
+  classEl.value = prevClass; dateEl.value = prevDate;
+}
+
+function resetAttendanceFilters() {
+  ['att-search','att-filter-class','att-filter-date','att-filter-wa','att-sort'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = id === 'att-sort' ? 'newest' : '';
+  });
+  renderAttendanceTable();
+}
+
 function renderAttendanceTable() {
   dom.attendanceTableBody.innerHTML = "";
   if (!state.attendances.length) {
@@ -2250,7 +2342,36 @@ function renderAttendanceTable() {
       '<tr><td colspan="7" class="text-center py-12 text-slate-400">No attendance records yet</td></tr>';
     return;
   }
-  state.attendances.forEach(record => {
+  populateAttendanceFilters();
+  const search    = (document.getElementById('att-search')?.value || '').toLowerCase().trim();
+  const filterCls = document.getElementById('att-filter-class')?.value || '';
+  const filterDt  = document.getElementById('att-filter-date')?.value  || '';
+  const filterWa  = document.getElementById('att-filter-wa')?.value    || '';
+  const sort      = document.getElementById('att-sort')?.value || 'newest';
+
+  let records = state.attendances.filter(a => {
+    if (search && !((a.name||'').toLowerCase().includes(search) || (a.roll||'').toLowerCase().includes(search) || (a.class||'').toLowerCase().includes(search))) return false;
+    if (filterCls && a.class !== filterCls) return false;
+    if (filterDt  && a.dateKey !== filterDt) return false;
+    if (filterWa === 'sent'    && !a.waSent) return false;
+    if (filterWa === 'pending' &&  a.waSent) return false;
+    return true;
+  });
+
+  if (sort === 'newest') records.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+  else if (sort === 'oldest') records.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+  else if (sort === 'name') records.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+  else if (sort === 'class') records.sort((a,b) => (a.class||'').localeCompare(b.class||''));
+
+  const countEl = document.getElementById('att-results-count');
+  if (countEl) countEl.textContent = records.length + ' of ' + state.attendances.length + ' records';
+
+  if (!records.length) {
+    dom.attendanceTableBody.innerHTML = '<tr><td colspan="7" class="text-center py-12 text-slate-400">No records match your filters</td></tr>';
+    return;
+  }
+
+  records.forEach(record => {
     const row = document.createElement("tr");
     row.className = "border-b border-slate-700 last:border-none hover:bg-slate-800/50";
     const matchLabel = record.matchPercent !== null && record.matchPercent !== undefined

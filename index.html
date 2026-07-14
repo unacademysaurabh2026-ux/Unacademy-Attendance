@@ -73,6 +73,7 @@
         min-height: 100vh;
         padding: 20px;
       }
+      /* No fullscreen circle resize — camera stays same size */
       /* ── Tab scrollbar hide ── */
       .nav-scroll::-webkit-scrollbar { display: none; }
       .nav-scroll { -ms-overflow-style: none; scrollbar-width: none; }
@@ -192,7 +193,7 @@
         <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5" id="sms-gateway-panel">
           <div class="flex items-center justify-between mb-1">
             <h3 class="font-semibold text-base flex items-center gap-2">📱 SMS Gateway Settings</h3>
-            <button onclick="addSmsGatewaySlot()" class="px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 rounded-xl text-xs font-semibold">+ Add Device</button>
+            <button id="add-sms-slot-btn" onclick="addSmsGatewaySlot()" class="px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 rounded-xl text-xs font-semibold">+ Add Device</button>
           </div>
           <p class="text-slate-400 text-sm mb-4">Add multiple devices — when one reaches 100 SMS/day limit, next device takes over automatically.</p>
           <div id="sms-gateway-slots" class="space-y-4"></div>
@@ -389,7 +390,7 @@
                 Start camera, then capture each angle one by one.
               </div>
 
-              <!-- Captured angle thumbnails (live camera) -->
+              <!-- Captured angle thumbnails -->
               <div class="flex gap-2 mb-3" id="angle-thumbnails">
                 <div class="flex-1 flex flex-col items-center gap-1">
                   <div id="thumb-front" class="w-full aspect-square rounded-2xl bg-slate-800 border-2 border-dashed border-slate-600 flex items-center justify-center text-2xl text-slate-600 overflow-hidden">😐</div>
@@ -405,7 +406,7 @@
                 </div>
               </div>
 
-              <!-- Camera box - circular like scan attendance -->
+              <!-- Camera box -->
               <div style="
                 width: min(72vw, 480px);
                 height: min(72vw, 480px);
@@ -417,8 +418,20 @@
                 box-shadow: 0 0 0 4px rgba(255,255,255,0.2), 0 0 60px rgba(255,255,255,0.5), 0 0 100px rgba(255,255,255,0.2);
                 background: #0f172a;
               ">
-                <video id="register-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;transform:scale(0.85);transform-origin:center center;"></video>
+                <video id="register-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;"></video>
                 <canvas id="register-canvas" class="hidden"></canvas>
+
+                <!-- SVG Circular Progress Ring -->
+                <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:10;" viewBox="0 0 120 120">
+                  <!-- Background ring -->
+                  <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="4"/>
+                  <!-- Progress ring — fills clockwise -->
+                  <circle id="reg-progress-ring" cx="60" cy="60" r="54" fill="none"
+                    stroke="#22c55e" stroke-width="4" stroke-linecap="round"
+                    stroke-dasharray="339.3" stroke-dashoffset="339.3"
+                    transform="rotate(-90 60 60)"
+                    style="transition:stroke-dashoffset 0.15s ease,opacity 0.3s;opacity:0;"/>
+                </svg>
                 <div id="register-overlay" style="border-radius:50%;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);">
                   <button type="button" onclick="startRegisterCamera()" id="start-register-btn"
                     class="bg-white text-slate-900 px-6 py-3 rounded-3xl font-semibold flex items-center gap-x-2">
@@ -442,7 +455,7 @@
                 Start the camera and capture 3 angles: Front → Left → Right.
               </p>
 
-              <!-- FIX #5: Upload from photos section -->
+              <!-- Upload from photos section -->
               <div class="mt-5 bg-slate-800/60 rounded-2xl p-4 border border-slate-700">
                 <p class="text-sm font-medium text-slate-300 mb-3">
                   📷 Or upload 3 photos (if student can't come in person)
@@ -498,7 +511,6 @@
       <!-- end REGISTER -->
 
       <!-- ══════════════════════════════════ SCAN ATTENDANCE ══ -->
-      <!-- FIX #7, #8, #9: Circular camera, clean UI, no clutter -->
       <div id="section-attendance" class="hidden">
         <div id="attendance-scan-section" class="flex flex-col items-center pt-4 pb-6">
 
@@ -578,6 +590,10 @@
             <button id="show-attendance-btn" onclick="showAttendanceList()"
               class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-3xl text-sm font-medium">
               📋 Attendance Log
+            </button>
+            <button onclick="refreshFromSheet()"
+              class="px-4 py-2 bg-slate-800 hover:bg-sky-500/20 hover:text-sky-400 rounded-3xl text-sm font-medium transition-colors">
+              🔄 Refresh
             </button>
             <button id="export-csv-btn" onclick="exportAttendanceCSV()"
               class="hidden px-4 py-2 bg-slate-800 hover:bg-emerald-500/20 hover:text-emerald-400 rounded-3xl text-sm font-medium transition-colors">
@@ -702,7 +718,13 @@
             class="text-sm text-slate-400 bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-2xl font-medium transition-colors whitespace-nowrap self-start sm:self-auto">
             🧹 Clear Resolved
           </button>
+          <button onclick="deleteAllUnidentified()"
+            class="text-sm text-red-400 bg-red-500/10 hover:bg-red-500/20 px-4 py-2 rounded-2xl font-medium transition-colors whitespace-nowrap self-start sm:self-auto">
+            🗑️ Delete All
+          </button>
         </div>
+
+        <!-- Search bar removed — search is now inside each entry panel -->
 
         <!-- Info box -->
         <div class="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 mb-5 text-sm">

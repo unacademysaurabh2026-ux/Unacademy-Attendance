@@ -3,13 +3,25 @@
 //  UPDATED: Bug fixes + new features
 // ============================================================
 
-// ─── Storage Keys ────────────────────────────────────────────
+// ─── Hardcoded SMS Gateway Devices ───────────────────────────
+// Edit this list to add/remove devices — changes here apply on all devices
+const HARDCODED_SMS_DEVICES = [
+  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
+  // { url: "http://192.168.1.101:8080", user: "admin", pass: "password", label: "Device 2 - BSNL SIM 2" },
+  // { url: "http://192.168.1.102:8080", user: "admin", pass: "password", label: "Device 3 - BSNL SIM 3" },
+  // Uncomment and fill in your actual device details above
+];
+// If HARDCODED_SMS_DEVICES has entries, they will be used instead of localStorage devices
+// ─────────────────────────────────────────────────────────────
+
+
 const STORAGE_KEYS = {
   settings:     "face-attendance-settings",
   students:     "face-attendance-students",
   attendance:   "face-attendance-log",
   trash:        "face-attendance-trash",
   unidentified: "face-attendance-unidentified",
+  avgDescs:     "face-attendance-avg-descriptors", // fast-scan cache
 };
 
 // ─── Defaults ────────────────────────────────────────────────
@@ -35,9 +47,13 @@ const REG_DETECTION_SCORE_MIN = 0.68;
 
 // ─── Angle definitions ───────────────────────────────────────
 const ANGLES = [
-  { key: "front", label: "😐 Front Face", icon: "😐", instruction: "Look straight at the camera" },
-  { key: "left",  label: "← Left Face",  icon: "←",  instruction: "Slowly turn your head to the LEFT" },
-  { key: "right", label: "Right Face →", icon: "→",  instruction: "Slowly turn your head to the RIGHT" },
+  { key: "front",      label: "😐 Front",       icon: "😐", instruction: "Look straight at the camera" },
+  { key: "left",       label: "← Left",          icon: "←",  instruction: "Slowly turn head to the LEFT" },
+  { key: "right",      label: "Right →",         icon: "→",  instruction: "Slowly turn head to the RIGHT" },
+  { key: "up",         label: "↑ Up",            icon: "↑",  instruction: "Tilt head slightly UP (for cap wearers)" },
+  { key: "down",       label: "↓ Down",          icon: "↓",  instruction: "Tilt head slightly DOWN (for hair over face)" },
+  { key: "tilt_left",  label: "↗ Tilt Left",    icon: "↗",  instruction: "Tilt head diagonally to upper-left" },
+  { key: "tilt_right", label: "↘ Tilt Right",   icon: "↘",  instruction: "Tilt head diagonally to upper-right" },
 ];
 
 // ─── Live attendance constants ────────────────────────────────
@@ -63,12 +79,12 @@ const state = {
 
   registerPhoto: null,
   registerDescriptors: null,
-  angleData: { front: null, left: null, right: null },
+  angleData: { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null },
   currentAngleIndex: 0,
   isUpdateMode: false,
 
   // Upload-from-photo registration
-  uploadedAngleFiles: { front: null, left: null, right: null },
+  uploadedAngleFiles: { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null },
 
   attendancePhoto: null,
   liveMatches: [],
@@ -85,6 +101,7 @@ const state = {
   overlayCtx: null,
   modelsLoaded: false,
   modalRecord: null,
+  avgDescriptors: {}, // studentId → averaged descriptor for fast scan
 
   regCapturing: false,
   regFrameTimerId: null,
@@ -104,6 +121,7 @@ document.addEventListener("DOMContentLoaded", initApp);
 
 
 // ─── Attendance circle size (original) ───────────────────────
+// No fullscreen size overrides — circle stays same size in fullscreen
 (function patchAttendanceCircleSize() {
   if (document.getElementById("attendance-circle-size")) return;
   const s = document.createElement("style");
@@ -121,18 +139,11 @@ document.addEventListener("DOMContentLoaded", initApp);
         height: min(88vw, 340px) !important;
       }
     }
-    :fullscreen #attendance-camera-box,
-    :-webkit-full-screen #attendance-camera-box {
-      width:  min(85vh, 560px) !important;
-      height: min(85vh, 560px) !important;
-      aspect-ratio: 1 / 1 !important;
-    }
-
   `;
   document.head.appendChild(s);
 })();
 
-// ─── Fullscreen rectangle fix ────────────────────────────────
+// ─── Fullscreen background fix (no circle resize) ────────────
 (function injectFullscreenFix() {
   if (document.getElementById("fullscreen-circle-fix")) return;
   const s = document.createElement("style");
@@ -141,12 +152,6 @@ document.addEventListener("DOMContentLoaded", initApp);
     :fullscreen #attendance-scan-section,
     :-webkit-full-screen #attendance-scan-section {
       background: #020617 !important;
-    }
-    :fullscreen #attendance-camera-box,
-    :-webkit-full-screen #attendance-camera-box {
-      box-shadow: 0 0 0 4px rgba(255,255,255,0.2),
-                  0 0 60px rgba(255,255,255,0.55),
-                  0 0 100px rgba(255,255,255,0.25) !important;
     }
   `;
   document.head.appendChild(s);
@@ -163,13 +168,11 @@ function initApp() {
   showSection("home");
   setupOverlayCanvas();
   updateDashboardStats();
-  renderStudentsGrid();
-  renderAttendanceTable();
-  // Init unidentified badge after DOM is ready
+  // Don't render heavy lists on startup — render only when tab is opened
   setTimeout(updateUnidentifiedBadge, 0);
-  // Init auto-backup scheduler
   initAutoBackup();
   loadSmsGatewayUrl();
+  startUnidentifiedAutoCleanup(); // auto-delete unidentified after 5 min
 }
 
 // ─── DOM assignment ───────────────────────────────────────────
@@ -254,9 +257,62 @@ function loadData() {
   state.attendances   = Array.isArray(savedAttendance)   ? savedAttendance.map(normalizeAttendance).filter(Boolean) : [];
   state.trash         = Array.isArray(savedTrash)        ? savedTrash : [];
   state.unidentified  = Array.isArray(savedUnidentified) ? savedUnidentified : [];
+
+  // Load cached averaged descriptors
+  state.avgDescriptors = loadJson(STORAGE_KEYS.avgDescs, {});
+
+  // Migrate existing students silently on first load
+  setTimeout(() => migrateAvgDescriptors(), 500);
 }
 
-function saveData() {
+// ─── Averaged descriptor helpers ─────────────────────────────
+// Compute + cache averaged descriptor for one student
+function computeAndCacheAvgDescriptor(student) {
+  if (!student) return null;
+  const descs = student.descriptors;
+  const avg = Array.isArray(descs) && descs.length > 0
+    ? averageDescriptors(descs)
+    : (Array.isArray(student.descriptor) ? student.descriptor : null);
+  if (avg) {
+    state.avgDescriptors[student.id] = avg;
+  }
+  return avg;
+}
+
+// Get averaged descriptor (from cache or compute on the fly)
+function getAvgDescriptor(student) {
+  if (state.avgDescriptors[student.id]) return state.avgDescriptors[student.id];
+  return computeAndCacheAvgDescriptor(student);
+}
+
+// Save avg descriptor cache to localStorage
+function saveAvgDescriptors() {
+  try {
+    localStorage.setItem(STORAGE_KEYS.avgDescs, JSON.stringify(state.avgDescriptors));
+  } catch (_) {}
+}
+
+// One-time silent migration for all existing students
+function migrateAvgDescriptors() {
+  let changed = false;
+  for (const student of state.students) {
+    if (!state.avgDescriptors[student.id]) {
+      computeAndCacheAvgDescriptor(student);
+      changed = true;
+    }
+  }
+  if (changed) saveAvgDescriptors();
+}
+
+// ─── Debounced saveData ───────────────────────────────────────
+let _saveDataTimer = null;
+function saveData(immediate = false) {
+  if (immediate) { _doSaveData(); return; }
+  clearTimeout(_saveDataTimer);
+  _saveDataTimer = setTimeout(_doSaveData, 800);
+}
+
+function _doSaveData() {
   try {
     localStorage.setItem(STORAGE_KEYS.settings,     JSON.stringify(state.settings));
     localStorage.setItem(STORAGE_KEYS.students,     JSON.stringify(state.students));
@@ -264,18 +320,21 @@ function saveData() {
     localStorage.setItem(STORAGE_KEYS.trash,        JSON.stringify(state.trash));
     localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
     updateDashboardStats();
-    renderStudentsGrid();
-    renderAttendanceTable();
+    // Only re-render the currently visible tab
+    const active = state.activeSection;
+    if (active === "records") {
+      if (!dom.studentsListView?.classList.contains("hidden")) renderStudentsGrid();
+      else renderAttendanceTable();
+    }
+    if (active === "trash")        renderTrash();
+    if (active === "unidentified") renderUnidentifiedList();
   } catch (e) {
     console.error("saveData failed:", e);
-    // If quota exceeded, try without scanPhoto
     try {
       const attendanceLight = state.attendances.map(a => ({ ...a, scanPhoto: "" }));
       localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(attendanceLight));
       localStorage.setItem(STORAGE_KEYS.students,   JSON.stringify(state.students));
       updateDashboardStats();
-      renderStudentsGrid();
-      renderAttendanceTable();
     } catch (e2) {
       console.error("saveData fallback also failed:", e2);
     }
@@ -306,6 +365,7 @@ function showSection(section) {
   if (state.scanLocked && section !== "attendance") {
     return; // locked — can't navigate away
   }
+  state.activeSection = section;
   dom.sections.forEach(el => el.classList.add("hidden"));
   document.getElementById(`section-${section}`)?.classList.remove("hidden");
   dom.tabs.forEach(t => t.classList.remove("nav-active"));
@@ -322,9 +382,12 @@ function showSection(section) {
     if (section !== "register") resetRegisterCaptureUi();
     if (section !== "attendance") resetAttendanceCaptureUi();
   }
-  if (section === "records") showStudentsList();
-  if (section === "trash")   renderTrash();
-  if (section === "unidentified") renderUnidentifiedList();
+  // Lazy render — only render when tab is actually opened
+  if (section === "records") {
+    requestAnimationFrame(() => showStudentsList());
+  }
+  if (section === "trash")   requestAnimationFrame(() => renderTrash());
+  if (section === "unidentified") requestAnimationFrame(() => renderUnidentifiedList());
 }
 
 // ─── Camera core ──────────────────────────────────────────────
@@ -549,7 +612,17 @@ async function captureCurrentAngle() {
   const idx = state.currentAngleIndex;
   if (idx >= ANGLES.length) return;
   const angle = ANGLES[idx];
-  dom.registerStatus.textContent = `Scanning ${angle.label}… Hold steady.`;
+
+  // Reset progress ring for this angle
+  const ring = document.getElementById("reg-progress-ring");
+  if (ring) { ring.style.strokeDashoffset = "339.3"; ring.style.opacity = "0"; }
+  const glowRing = document.getElementById("reg-glow-ring");
+  if (glowRing) {
+    glowRing.style.borderColor = "rgba(255,255,255,0.9)";
+    glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(255,255,255,0.5)";
+  }
+
+  dom.registerStatus.textContent = `Scanning ${angle.label}… collecting 10 samples.`;
   if (dom.captureAngleBtn) dom.captureAngleBtn.disabled = true;
   try {
     await ensureModels();
@@ -568,7 +641,7 @@ async function captureCurrentAngle() {
       thumb.style.borderStyle = "solid";
     }
     dom.registerStatus.textContent =
-      `✅ ${angle.label} captured (${descriptors.length} frames).` +
+      `✅ ${angle.label} captured (${descriptors.length} samples).` +
       (idx + 1 < ANGLES.length ? ` Now capture ${ANGLES[idx + 1].label}.` : " All angles done!");
     state.currentAngleIndex += 1;
     updateAngleUI();
@@ -600,25 +673,56 @@ function mergeAngleDescriptors() {
 async function captureAngleVideo(videoElement, canvasElement) {
   const collected = [];
   const photos    = [];
-  const startTime = Date.now();
+  const TARGET    = REG_TARGET_EMBEDDINGS; // 10 per angle
+
+  // Update circular progress ring in register page
+  function updateRegProgressRing(count) {
+    const ring = document.getElementById("reg-progress-ring");
+    if (!ring) return;
+    const circumference = 2 * Math.PI * 54; // r=54
+    const progress = Math.min(count / TARGET, 1);
+    ring.style.strokeDashoffset = circumference * (1 - progress);
+    ring.style.stroke = progress >= 1 ? "#22c55e" : "#22c55e";
+    ring.style.opacity = progress > 0 ? "1" : "0";
+    // Green border when complete
+    const glowRing = document.getElementById("reg-glow-ring");
+    if (glowRing) {
+      if (progress >= 1) {
+        glowRing.style.borderColor = "#22c55e";
+        glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(34,197,94,0.7),0 0 60px rgba(34,197,94,0.4)";
+      } else {
+        glowRing.style.borderColor = "rgba(255,255,255,0.9)";
+        glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(255,255,255,0.5)";
+      }
+    }
+  }
+
   return new Promise((resolve) => {
     state.regCapturing = true;
+    const MAX_WAIT_MS = 12000; // max 12 seconds fallback
+    const startTime   = Date.now();
+
     state.regFrameTimerId = setInterval(async () => {
       const elapsed = Date.now() - startTime;
-      if (elapsed >= REG_VIDEO_DURATION_MS || collected.length >= REG_TARGET_EMBEDDINGS || !state.regCapturing) {
+      const forceStop = elapsed >= MAX_WAIT_MS || !state.regCapturing;
+
+      if (collected.length >= TARGET || forceStop) {
         clearInterval(state.regFrameTimerId);
         state.regFrameTimerId = null;
         state.regCapturing = false;
+        updateRegProgressRing(collected.length);
         const final = storeMultipleEmbeddings(collected);
         resolve({ descriptors: final, bestFrameUrl: photos[0] || captureFrameAsDataUrl(videoElement, canvasElement) });
         return;
       }
+
       const result = await extractBestFrame(videoElement, canvasElement);
       if (result) {
         const { descriptor, dataUrl } = result;
         if (!isDuplicateDescriptor(descriptor, collected)) {
           collected.push(descriptor);
           if (photos.length < 2) photos.push(dataUrl);
+          updateRegProgressRing(collected.length);
         }
       }
     }, REG_FRAME_INTERVAL_MS);
@@ -630,6 +734,11 @@ async function captureRegisterPhoto() {
 }
 
 function resetAllAngles() {
+  if (state.regFrameTimerId) {
+    clearInterval(state.regFrameTimerId);
+    state.regFrameTimerId = null;
+    state.regCapturing = false;
+  }
   state.currentAngleIndex  = 0;
   state.angleData          = { front: null, left: null, right: null };
   state.registerDescriptors= null;
@@ -638,34 +747,34 @@ function resetAllAngles() {
   state.regCollectedPhotos = [];
   state.isUpdateMode       = false;
   state.uploadedAngleFiles = { front: null, left: null, right: null };
-  for (const angle of ANGLES) {
-    const thumb = document.getElementById(`thumb-${angle.key}`);
+
+  // Reset thumbnails
+  const icons = { front:"😐", left:"←", right:"→" };
+  for (const [key, icon] of Object.entries(icons)) {
+    const thumb = document.getElementById(`thumb-${key}`);
     if (thumb) {
-      thumb.innerHTML = `<span style="font-size:1.5rem;color:#475569;">${angle.icon}</span>`;
+      thumb.innerHTML = icon;
       thumb.style.borderColor = "";
       thumb.style.borderStyle = "dashed";
     }
   }
-  // Reset upload previews
-  for (const key of ["front","left","right"]) {
-    const up = document.getElementById(`upload-preview-${key}`);
-    if (up) up.innerHTML = `<span class="text-2xl">${key === "front" ? "😐" : key === "left" ? "←" : "→"}</span><span class="text-xs text-slate-500 mt-1">Tap to upload</span>`;
+
+  // Reset progress ring
+  const ring = document.getElementById("reg-progress-ring");
+  if (ring) { ring.style.strokeDashoffset = "339.3"; ring.style.opacity = "0"; }
+  const glowRing = document.getElementById("reg-glow-ring");
+  if (glowRing) {
+    glowRing.style.borderColor = "rgba(255,255,255,0.9)";
+    glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(255,255,255,0.5)";
   }
-  const instrEl = document.getElementById("angle-instruction");
-  if (instrEl) instrEl.textContent = "Start camera, then capture each angle one by one.";
-  dom.registerPreview.classList.add("hidden");
-  dom.registerPhotoPreview.removeAttribute("src");
-  const submitBtn = document.getElementById("register-submit-btn");
-  if (submitBtn) {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "✅ Register Student";
+
+  if (dom.registerVideo?.srcObject) {
+    dom.registerStatus.textContent = "Reset done. Capture each angle again.";
+  } else {
+    dom.registerStatus.textContent = "Reset done. Start camera to begin.";
   }
   updateAngleUI();
-  dom.registerStatus.textContent = "Angles reset. Start camera and capture again.";
-}
-
-function retakeRegisterPhoto() {
-  resetAllAngles();
+  dom.registerPreview?.classList.add("hidden");
 }
 
 // ─── UPLOAD FROM PHOTO (Register without live camera) ─────────
@@ -883,8 +992,19 @@ async function registerStudent(event) {
   else state.students[idx] = student;
   const submittedAngles = Object.values(state.angleData).filter(Boolean).length;
 
-  // ── FIX #1: Save first, THEN reset UI ────────────────────────
-  saveData();
+  // Compute and cache averaged descriptor for fast scan
+  computeAndCacheAvgDescriptor(student);
+  saveAvgDescriptors();
+
+  saveData(true);
+
+  // ── Sync to Google Sheets ──────────────────────────────────
+  if (typeof syncStudentToSheets === "function") {
+    syncStudentToSheets(student).catch(e => console.warn("Sheet sync failed:", e));
+  }
+  if (typeof syncFaceDataToSheets === "function") {
+    syncFaceDataToSheets(student).catch(e => console.warn("Face sync failed:", e));
+  }
 
   // Reset form and UI after saving
   dom.registerForm.reset();
@@ -945,7 +1065,7 @@ let _facePreviewTimerId = null;
 async function beginFacePreviewLoop() {
   if (_facePreviewTimerId) clearInterval(_facePreviewTimerId);
   _facePreviewTimerId = setInterval(async () => {
-    if (state.scanningActive) return; // handed off to full recognition
+    if (state.scanningActive) return;
     if (state.currentCameraMode !== "attendance" || !dom.attendanceVideo.srcObject) return;
     try {
       const _faceapi = typeof faceapi !== "undefined" ? faceapi : window.faceapi;
@@ -954,6 +1074,7 @@ async function beginFacePreviewLoop() {
           new _faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
         .withFaceLandmarks();
       clearOverlayCanvas();
+      const camBox = document.getElementById("attendance-camera-box");
       if (detections && detections.length > 0) {
         drawFaceBoxes(detections);
         const nameStrip = document.getElementById("scan-name-strip");
@@ -961,11 +1082,21 @@ async function beginFacePreviewLoop() {
           nameStrip.textContent = "👤 Face detected — press Scan Now";
           nameStrip.style.background = "rgba(14,165,233,0.5)";
         }
+        // ── Green circle glow when face detected ──
+        if (camBox) {
+          camBox.style.borderColor = "rgba(34,197,94,0.95)";
+          camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(34,197,94,0.7),0 0 100px rgba(34,197,94,0.4),0 0 140px rgba(34,197,94,0.2)";
+        }
       } else {
         const nameStrip = document.getElementById("scan-name-strip");
         if (nameStrip) {
           nameStrip.textContent = "";
           nameStrip.style.background = "transparent";
+        }
+        // ── White circle glow when no face ──
+        if (camBox) {
+          camBox.style.borderColor = "rgba(255,255,255,0.9)";
+          camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25),0 0 140px rgba(255,255,255,0.1)";
         }
       }
     } catch (_) {}
@@ -1059,7 +1190,7 @@ async function runFrozenFrameRecognition(frozenCanvas) {
       // Save unidentified entry
       const capturedAt   = new Date().toISOString();
       const imageDataUrl = frozenCanvas.toDataURL("image/jpeg", 0.85);
-      saveUnidentifiedEntry(imageDataUrl, capturedAt);
+      saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch.student?.name || "");
       unfreezeVideoFrame();
       state.scanningActive = false;
       setTimeout(resetToScanReady, 1200);
@@ -1076,7 +1207,7 @@ async function runFrozenFrameRecognition(frozenCanvas) {
         `Match too low (${matchPctCheck}% < ${minPct}% min). Closest: ${bestMatch.student?.name || "unknown"}`;
       const capturedAt   = new Date().toISOString();
       const imageDataUrl = frozenCanvas.toDataURL("image/jpeg", 0.85);
-      saveUnidentifiedEntry(imageDataUrl, capturedAt);
+      saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch.student?.name || "");
       unfreezeVideoFrame();
       state.scanningActive = false;
       setTimeout(resetToScanReady, 1200);
@@ -1299,7 +1430,7 @@ async function runLiveRecognition() {
         state._unknownFaceCaptured = true;
         const capturedAt   = new Date().toISOString();
         const imageDataUrl = captureFrameAsDataUrl(dom.attendanceVideo, dom.attendanceCanvas);
-        saveUnidentifiedEntry(imageDataUrl, capturedAt);
+        saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch?.student?.name || "");
         // Stop recognition loop, go back to Scan Now state
         setTimeout(resetToScanReady, 800);
         return;
@@ -1407,7 +1538,7 @@ async function runLiveRecognition() {
 }
 
 function rankStudentsByMultiEmbedding(descriptor, dynThreshold) {
-  const threshold = dynThreshold ?? Number(state.settings.matchThreshold);
+  // Use full individual embeddings only — most accurate
   const withDescriptors = state.students.filter(s =>
     Array.isArray(s.descriptors) && s.descriptors.length > 0
   );
@@ -1425,9 +1556,11 @@ function rankStudentsByMultiEmbedding(descriptor, dynThreshold) {
       distance: descriptorDistance(descriptor, student.descriptor),
     })),
   ].sort((a, b) => a.distance - b.distance);
+
   const noDescriptor = state.students
     .filter(s => !Array.isArray(s.descriptors) && !Array.isArray(s.descriptor))
     .map(s => ({ student: s, distance: null }));
+
   return [...ranked, ...noDescriptor];
 }
 
@@ -1913,6 +2046,10 @@ function sendWhatsAppToAll() {
 // ─── SMS Gateway Multi-Device Settings ───────────────────────
 // Each slot: { url, user, pass, label }
 function getSmsSlots() {
+  // Use hardcoded devices if defined in config
+  if (HARDCODED_SMS_DEVICES && HARDCODED_SMS_DEVICES.length > 0) {
+    return HARDCODED_SMS_DEVICES;
+  }
   return JSON.parse(localStorage.getItem('sms-gateway-slots') || '[]');
 }
 function saveSmsSlots(slots) {
@@ -1948,7 +2085,25 @@ function updateSmsSlot(idx, field, value) {
 
 function renderSmsSlots() {
   const container = document.getElementById('sms-gateway-slots');
+  const panel     = document.getElementById('sms-gateway-panel');
   if (!container) return;
+
+  // If hardcoded devices exist — hide manual UI, show info message
+  if (HARDCODED_SMS_DEVICES && HARDCODED_SMS_DEVICES.length > 0) {
+    container.innerHTML = `
+      <div class="bg-sky-500/10 border border-sky-500/30 rounded-2xl p-4 text-sm text-sky-300">
+        ✅ <strong>${HARDCODED_SMS_DEVICES.length} device(s)</strong> configured in code:<br>
+        <ul class="mt-2 space-y-1 text-slate-300">
+          ${HARDCODED_SMS_DEVICES.map((d, i) => `<li>📱 ${d.label || 'Device ' + (i+1)}</li>`).join('')}
+        </ul>
+        <p class="mt-2 text-xs text-slate-400">To change devices, edit HARDCODED_SMS_DEVICES in app.js on GitHub.</p>
+      </div>
+    `;
+    // Hide add device button
+    const addBtn = document.getElementById('add-sms-slot-btn');
+    if (addBtn) addBtn.style.display = 'none';
+    return;
+  }
   const slots = getSmsSlots();
   if (slots.length === 0) {
     container.innerHTML = '<p class="text-slate-500 text-sm text-center py-2">No devices added. Click "+ Add Device" to add one.</p>';
@@ -2214,6 +2369,17 @@ function sendWaFromSplit(recordId, btn) {
 }
 
 // ─── Records UI ───────────────────────────────────────────────
+async function refreshFromSheet() {
+  if (typeof loadFromSheets !== "function") return;
+  try {
+    await loadFromSheets();
+    if (!dom.studentsListView?.classList.contains("hidden")) renderStudentsGrid();
+    else renderAttendanceTable();
+  } catch(e) {
+    console.warn("Refresh failed:", e);
+  }
+}
+
 function showStudentsList() {
   dom.studentsListView.classList.remove("hidden");
   dom.attendanceListView.classList.add("hidden");
@@ -2257,51 +2423,61 @@ function renderStudentsGrid(searchQuery) {
   }
   if (noResults) noResults.classList.add("hidden");
 
-  filtered.forEach(student => {
-    const card = document.createElement("div");
-    card.className =
-      "bg-slate-900 border border-slate-700 hover:border-sky-400 rounded-3xl p-5 transition-all";
-    const embBadge = student.embeddingCount
-      ? `<div class="text-xs text-sky-400 mt-1">🧠 ${student.embeddingCount} face samples</div>` : "";
-    const angleInfo = student.angleData
-      ? Object.entries(student.angleData)
-          .filter(([, v]) => v)
-          .map(([k]) => `<span class="inline-block bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded-lg">${k}</span>`)
-          .join("")
-      : "";
-    card.innerHTML = `
-      <img src="${escapeHtml(student.facePhoto||"")}"
-           class="w-full aspect-square object-cover rounded-3xl mb-4 bg-slate-800"
-           alt="${escapeHtml(student.name)}">
-      <div class="font-semibold text-lg">${escapeHtml(student.name)}</div>
-      <div class="flex justify-between text-sm mt-1 gap-4">
-        <span class="text-slate-400">Roll ${escapeHtml(student.roll)}</span>
-        <span class="font-medium">${escapeHtml(student.class)}</span>
-      </div>
-      ${embBadge}
-      ${angleInfo ? `<div class="flex gap-1 flex-wrap mt-2">${angleInfo}</div>` : ""}
-      <div class="text-xs text-slate-400 mt-4 space-y-1">
-        <div>📱 Student: ${escapeHtml(student.studentPhone||"-")}</div>
-        <div>👨‍👩‍👧 Parent: ${escapeHtml(student.parentPhone||"-")}</div>
-      </div>
-      <div class="flex gap-2 mt-4">
-        <button type="button"
-          class="flex-1 text-xs bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 px-3 py-2 rounded-2xl font-medium transition-colors"
-          onclick="openEditModal('${escapeHtml(student.id)}')">
-          ✏️ Edit
-        </button>
-        <button type="button"
-          class="flex-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-2 rounded-2xl font-medium transition-colors"
-          onclick="deleteStudent('${escapeHtml(student.id)}')">
-          🗑️ Delete
-        </button>
-      </div>
-    `;
-    dom.studentsGrid.appendChild(card);
-  });
+  // Chunked rendering — render 20 at a time to keep UI responsive
+  const CHUNK = 20;
+  let idx = 0;
+  function renderChunk() {
+    const end = Math.min(idx + CHUNK, filtered.length);
+    const frag = document.createDocumentFragment();
+    for (; idx < end; idx++) {
+      const student = filtered[idx];
+      const card = document.createElement("div");
+      card.className = "bg-slate-900 border border-slate-700 hover:border-sky-400 rounded-3xl p-5 transition-all";
+      const embBadge = student.embeddingCount
+        ? `<div class="text-xs text-sky-400 mt-1">🧠 ${student.embeddingCount} face samples</div>` : "";
+      const angleInfo = student.angleData
+        ? Object.entries(student.angleData)
+            .filter(([, v]) => v)
+            .map(([k]) => `<span class="inline-block bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded-lg">${k}</span>`)
+            .join("")
+        : "";
+      card.innerHTML = `
+        <img src="${escapeHtml(student.facePhoto||"")}"
+             class="w-full aspect-square object-cover rounded-3xl mb-4 bg-slate-800"
+             alt="${escapeHtml(student.name)}">
+        <div class="font-semibold text-lg">${escapeHtml(student.name)}</div>
+        <div class="flex justify-between text-sm mt-1 gap-4">
+          <span class="text-slate-400">Roll ${escapeHtml(student.roll)}</span>
+          <span class="font-medium">${escapeHtml(student.class)}</span>
+        </div>
+        ${embBadge}
+        ${angleInfo ? `<div class="flex gap-1 flex-wrap mt-2">${angleInfo}</div>` : ""}
+        <div class="text-xs text-slate-400 mt-4 space-y-1">
+          <div>📱 Student: ${escapeHtml(student.studentPhone||"-")}</div>
+          <div>👨‍👩‍👧 Parent: ${escapeHtml(student.parentPhone||"-")}</div>
+        </div>
+        <div class="flex gap-2 mt-4">
+          <button type="button"
+            class="flex-1 text-xs bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 px-3 py-2 rounded-2xl font-medium transition-colors"
+            onclick="openEditModal('${escapeHtml(student.id)}')">
+            ✏️ Edit
+          </button>
+          <button type="button"
+            class="flex-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-2 rounded-2xl font-medium transition-colors"
+            onclick="deleteStudent('${escapeHtml(student.id)}')">
+            🗑️ Delete
+          </button>
+        </div>
+      `;
+      frag.appendChild(card);
+    }
+    dom.studentsGrid.appendChild(frag);
+    if (idx < filtered.length) requestAnimationFrame(renderChunk);
+  }
+  requestAnimationFrame(renderChunk);
 }
 
-function showAttendanceList() {
+async function showAttendanceList() {
   dom.studentsListView.classList.add("hidden");
   dom.attendanceListView.classList.remove("hidden");
   dom.showAttendanceButton.classList.add("bg-sky-500", "text-white");
@@ -2371,63 +2547,69 @@ function renderAttendanceTable() {
     return;
   }
 
-  records.forEach(record => {
-    const row = document.createElement("tr");
-    row.className = "border-b border-slate-700 last:border-none hover:bg-slate-800/50";
-    const matchLabel = record.matchPercent !== null && record.matchPercent !== undefined
-      ? `${record.matchPercent}%` : "";
-    // FIX #4: WhatsApp sent status column
-    const waStatus = record.waSent
-      ? `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`
-      : `<span class="text-slate-500 text-xs">Not sent</span>`;
-    const profileBadge = record.profileStatus === "deleted"
-      ? `<span class="ml-1 text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-lg">Deleted Profile</span>`
-      : `<span class="ml-1 text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-lg">Active</span>`;
-    row.innerHTML = `
-      <td class="px-4 py-4 text-xs">${escapeHtml(record.formattedTime)}</td>
-      <td class="px-4 py-4 font-medium">${escapeHtml(record.name)}${matchLabel ? `<span class="ml-2 text-xs text-emerald-400">${matchLabel}</span>` : ""}</td>
-      <td class="px-4 py-4 text-sm">${escapeHtml(record.roll)}</td>
-      <td class="px-4 py-4 text-sm">${escapeHtml(record.class)}</td>
-      <td class="px-4 py-4">${profileBadge}</td>
-      <td class="px-4 py-4 text-center">${waStatus}</td>
-      <td class="px-4 py-4 text-right">
-        <div class="flex gap-2 justify-end">
-          <button type="button"
-            class="attendance-wa-btn text-emerald-400 text-xs font-medium px-3 py-2 bg-emerald-400/10 hover:bg-emerald-400/20 rounded-2xl"
-            data-record-id="${escapeHtml(record.id)}">
-            📤 WA
-          </button>
-          <button type="button"
-            class="attendance-del-btn text-red-400 text-xs font-medium px-3 py-2 bg-red-400/10 hover:bg-red-400/20 rounded-2xl"
-            data-record-id="${escapeHtml(record.id)}">
-            🗑️
-          </button>
-        </div>
-      </td>
-    `;
-    row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
-      const rec = state.attendances.find(e => e.id === record.id);
-      if (rec) {
-        openWhatsappForRecord(rec);
-        markWaSent(rec.id);
-        // Immediately update status cell
-        const statusCell = row.querySelectorAll("td")[5];
-        if (statusCell) {
-          statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+  // Chunked rendering — render 30 rows at a time
+  const CHUNK = 30;
+  let idx = 0;
+  function renderChunk() {
+    const end = Math.min(idx + CHUNK, records.length);
+    const frag = document.createDocumentFragment();
+    for (; idx < end; idx++) {
+      const record = records[idx];
+      const row = document.createElement("tr");
+      row.className = "border-b border-slate-700 last:border-none hover:bg-slate-800/50";
+      const matchLabel = record.matchPercent !== null && record.matchPercent !== undefined
+        ? `${record.matchPercent}%` : "";
+      const waStatus = record.waSent
+        ? `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`
+        : `<span class="text-slate-500 text-xs">Not sent</span>`;
+      const profileBadge = record.profileStatus === "deleted"
+        ? `<span class="ml-1 text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-lg">Deleted Profile</span>`
+        : `<span class="ml-1 text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-lg">Active</span>`;
+      row.innerHTML = `
+        <td class="px-4 py-4 text-xs">${escapeHtml(record.formattedTime)}</td>
+        <td class="px-4 py-4 font-medium">${escapeHtml(record.name)}${matchLabel ? `<span class="ml-2 text-xs text-emerald-400">${matchLabel}</span>` : ""}</td>
+        <td class="px-4 py-4 text-sm">${escapeHtml(record.roll)}</td>
+        <td class="px-4 py-4 text-sm">${escapeHtml(record.class)}</td>
+        <td class="px-4 py-4">${profileBadge}</td>
+        <td class="px-4 py-4 text-center">${waStatus}</td>
+        <td class="px-4 py-4 text-right">
+          <div class="flex gap-2 justify-end">
+            <button type="button"
+              class="attendance-wa-btn text-emerald-400 text-xs font-medium px-3 py-2 bg-emerald-400/10 hover:bg-emerald-400/20 rounded-2xl"
+              data-record-id="${escapeHtml(record.id)}">
+              📤 WA
+            </button>
+            <button type="button"
+              class="attendance-del-btn text-red-400 text-xs font-medium px-3 py-2 bg-red-400/10 hover:bg-red-400/20 rounded-2xl"
+              data-record-id="${escapeHtml(record.id)}">
+              🗑️
+            </button>
+          </div>
+        </td>
+      `;
+      row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
+        const rec = state.attendances.find(e => e.id === record.id);
+        if (rec) {
+          openWhatsappForRecord(rec);
+          markWaSent(rec.id);
+          const statusCell = row.querySelectorAll("td")[5];
+          if (statusCell) statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
+          this.textContent = '✅ Sent';
+          this.style.background = 'rgba(16,185,129,0.2)';
+          this.style.color = '#10b981';
+          this.disabled = true;
+          this.style.cursor = 'default';
         }
-        // Immediately update the button itself to show sent
-        this.textContent = '✅ Sent';
-        this.style.background = 'rgba(16,185,129,0.2)';
-        this.style.color = '#10b981';
-        this.disabled = true;
-        this.style.cursor = 'default';
-      }
-    });
-    row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
-      deleteAttendanceRecord(record.id);
-    });
-    dom.attendanceTableBody.appendChild(row);
-  });
+      });
+      row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
+        deleteAttendanceRecord(record.id);
+      });
+      frag.appendChild(row);
+    }
+    dom.attendanceTableBody.appendChild(frag);
+    if (idx < records.length) requestAnimationFrame(renderChunk);
+  }
+  requestAnimationFrame(renderChunk);
 }
 
 // ─── TRASH / RECYCLE BIN ──────────────────────────────────────
@@ -2501,11 +2683,12 @@ function clearTrash() {
  * Called automatically after 2 s of continuous unknown face.
  * Saves a new entry with: unique ID, captured image, exact scan time.
  */
-function saveUnidentifiedEntry(imageDataUrl, capturedAt) {
+function saveUnidentifiedEntry(imageDataUrl, capturedAt, closestName) {
   const uid = `UNK-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
   const entry = {
     id:            uid,
-    image:         "",
+    image:         "", // never save image — no storage waste
+    closestName:   closestName || "",
     capturedAt:    capturedAt,
     dateKey:       getLocalDateKey(new Date(capturedAt)),
     dateLabel:     formatDate(new Date(capturedAt)),
@@ -2521,23 +2704,13 @@ function saveUnidentifiedEntry(imageDataUrl, capturedAt) {
   // ── Play captured sound ──
   playSound("captured");
 
-  // ── Show Done popup ──
+  // ── Show Not Identified popup (red theme) ──
   showUnidentifiedCapturedPopup(entry);
 
-  // ── Auto-download image to device ──
-  if (imageDataUrl && imageDataUrl.startsWith("data:")) {
-    try {
-      const a = document.createElement("a");
-      a.href     = imageDataUrl;
-      a.download = `${uid}.jpg`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } catch (_) {}
-  }
+  // No auto-download, no image stored anywhere
 
   dom.attendanceStatus.textContent =
-    `⚠️ Unknown face captured (${uid}). Saved to Unidentified tab & downloaded.`;
+    `⚠️ Unknown face captured (${uid}). Saved to Unidentified tab.`;
 }
 
 function showUnidentifiedCapturedPopup(entry) {
@@ -2554,40 +2727,36 @@ function showUnidentifiedCapturedPopup(entry) {
   popup.innerHTML = `
     <div style="
       background:#0f172a;
-      border:2px solid #f59e0b;
+      border:2px solid #ef4444;
       border-radius:28px;
       padding:28px 24px 24px;
       max-width:320px;
       width:90%;
       text-align:center;
-      box-shadow:0 0 0 4px rgba(245,158,11,0.15), 0 25px 60px rgba(0,0,0,0.6);
+      box-shadow:0 0 0 4px rgba(239,68,68,0.15), 0 25px 60px rgba(0,0,0,0.6);
       animation:modalPop 0.25s ease-out;
     ">
-      <!-- Face photo -->
+      <!-- Red cross icon -->
       <div style="
-        width:100px;height:100px;border-radius:50%;overflow:hidden;
-        margin:0 auto 16px;border:3px solid #f59e0b;
-        background:#1e293b;
-      ">
-        <img src="${escapeHtml(entry.image)}" alt="Captured face"
-          style="width:100%;height:100%;object-fit:cover;"
-          onerror="this.parentElement.innerHTML='❓';"
-        />
-      </div>
+        width:90px;height:90px;border-radius:50%;
+        border:3px solid #ef4444;background:#1e293b;
+        display:flex;align-items:center;justify-content:center;
+        margin:0 auto 16px;font-size:44px;line-height:1;
+      ">❌</div>
 
-      <!-- Done heading -->
-      <div style="font-size:26px;font-weight:800;color:#fbbf24;letter-spacing:-0.5px;margin-bottom:4px;">
-        📋 Done
+      <!-- Not Identified heading -->
+      <div style="font-size:26px;font-weight:800;color:#ef4444;letter-spacing:-0.5px;margin-bottom:4px;">
+        Not Identified
       </div>
       <div style="font-size:13px;color:#94a3b8;margin-bottom:14px;">
-        Face not identified — image captured &amp; saved
+        Face not recognised — entry saved
       </div>
 
       <!-- UID chip -->
       <div style="
         background:#1e293b;border:1px solid #334155;
         border-radius:12px;padding:8px 14px;
-        font-family:monospace;font-size:12px;color:#f59e0b;
+        font-family:monospace;font-size:12px;color:#ef4444;
         word-break:break-all;margin-bottom:8px;
       ">${escapeHtml(entry.id)}</div>
 
@@ -2597,7 +2766,7 @@ function showUnidentifiedCapturedPopup(entry) {
       </div>
 
       <div style="font-size:12px;color:#475569;margin-bottom:20px;">
-        Image downloaded to device. Go to <strong style="color:#f59e0b;">Unidentified</strong> tab to mark attendance.
+        Go to <strong style="color:#ef4444;">Unidentified</strong> tab to manually mark attendance.
       </div>
 
       <!-- Close button -->
@@ -2605,7 +2774,7 @@ function showUnidentifiedCapturedPopup(entry) {
         onclick="document.getElementById('unk-captured-popup').style.display='none';"
         style="
           width:100%;padding:14px;border-radius:16px;border:none;cursor:pointer;
-          background:linear-gradient(90deg,#f59e0b,#f97316);
+          background:linear-gradient(90deg,#ef4444,#dc2626);
           color:#fff;font-size:16px;font-weight:700;
           transition:opacity 0.15s;
         "
@@ -2643,10 +2812,22 @@ function renderUnidentifiedList() {
   const container = document.getElementById("unidentified-list");
   if (!container) return;
   container.innerHTML = "";
-  const items = state.unidentified;
+
+  const query = (document.getElementById("unidentified-search-input")?.value || "").trim().toLowerCase();
+  let items = state.unidentified;
+
+  // Filter by closest match name if search is active
+  if (query) {
+    items = items.filter(e =>
+      (e.closestName || "").toLowerCase().includes(query) ||
+      (e.id || "").toLowerCase().includes(query)
+    );
+  }
+
   if (!items.length) {
-    container.innerHTML =
-      '<div class="text-center py-16 text-slate-400 text-lg">✅ No unidentified faces. All good!</div>';
+    container.innerHTML = query
+      ? '<div class="text-center py-16 text-slate-400 text-lg">No entries match your search.</div>'
+      : '<div class="text-center py-16 text-slate-400 text-lg">✅ No unidentified faces. All good!</div>';
     return;
   }
 
@@ -2715,7 +2896,17 @@ function renderUnidentifiedList() {
           <p class="text-sm text-slate-300 font-semibold mb-3">
             👇 Select the student this face belongs to:
           </p>
-          <div class="space-y-2 max-h-64 overflow-y-auto pr-1" style="scrollbar-width:thin;">
+          <!-- Search inside panel -->
+          <div class="relative mb-3">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">🔍</span>
+            <input
+              type="text"
+              placeholder="Search student name…"
+              oninput="filterUnkStudentList('${escapeHtml(entry.id)}', this.value)"
+              class="w-full bg-slate-900 border border-slate-600 focus:border-sky-500 focus:outline-none rounded-xl pl-9 pr-4 py-2 text-sm text-slate-100 placeholder-slate-500"
+            />
+          </div>
+          <div id="unk-student-list-${escapeHtml(entry.id)}" class="space-y-2 max-h-64 overflow-y-auto pr-1" style="scrollbar-width:thin;">
             ${studentCards.length ? studentCards : '<p class="text-slate-400 text-sm">No students registered yet.</p>'}
           </div>
           <input type="hidden" id="unk-selected-sid-${escapeHtml(entry.id)}" value="" />
@@ -2746,6 +2937,17 @@ function toggleUnkPanel(entryId) {
   if (!panel) return;
   const open = panel.classList.toggle("hidden");
   if (chevron) chevron.style.transform = open ? "" : "rotate(180deg)";
+}
+
+function filterUnkStudentList(entryId, query) {
+  const listEl = document.getElementById(`unk-student-list-${entryId}`);
+  if (!listEl) return;
+  const q = query.trim().toLowerCase();
+  listEl.querySelectorAll(".unk-student-card").forEach(card => {
+    const name = (card.querySelector(".font-semibold")?.textContent || "").toLowerCase();
+    const roll = (card.querySelector(".text-xs")?.textContent || "").toLowerCase();
+    card.style.display = (!q || name.includes(q) || roll.includes(q)) ? "" : "none";
+  });
 }
 
 function selectUnkStudent(entryId, studentId, el) {
@@ -2817,10 +3019,14 @@ function markUnidentifiedAttendance(entryId) {
   }
 
   state.attendances.unshift(record);
-  saveData();
+  saveData(true); // immediate save so markWaSent can find the record
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
   renderUnidentifiedList();
+
+  // ── Auto send SMS to parent ────────────────────────────────
+  autoSendSms(record);
+
   showUnidentifiedSuccessPopup(record);
 }
 
@@ -2884,6 +3090,33 @@ function sendUnidentifiedWhatsApp(recordId) {
 function dismissUnidentifiedEntry(entryId) {
   if (!confirm("Dismiss this unidentified entry? It will be removed.")) return;
   state.unidentified = state.unidentified.filter(e => e.id !== entryId);
+  localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
+  updateUnidentifiedBadge();
+  renderUnidentifiedList();
+}
+
+// ─── Auto-delete unidentified entries after 5 minutes ────────
+function startUnidentifiedAutoCleanup() {
+  setInterval(() => {
+    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+    const before = state.unidentified.length;
+    state.unidentified = state.unidentified.filter(e => {
+      if (e.resolved) return true; // keep resolved entries
+      return new Date(e.capturedAt).getTime() > fiveMinAgo;
+    });
+    if (state.unidentified.length !== before) {
+      localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
+      updateUnidentifiedBadge();
+      // Re-render only if unidentified tab is active
+      if (state.activeSection === "unidentified") renderUnidentifiedList();
+    }
+  }, 60 * 1000); // check every 1 minute
+}
+
+function deleteAllUnidentified() {
+  if (!state.unidentified.length) { alert("No unidentified entries to delete."); return; }
+  if (!confirm(`Delete all ${state.unidentified.length} unidentified entries? This cannot be undone.`)) return;
+  state.unidentified = [];
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
   renderUnidentifiedList();
@@ -2999,26 +3232,30 @@ async function captureEditAngle() {
   if (!video || !video.srcObject) { alert("Start camera first."); return; }
   const idx = _editAngle.index;
   if (idx >= _editAngleDefs.length) return;
-  const angleKey = _editAngleDefs[idx].key;
+  const angleDef = _editAngleDefs[idx];
+  const angleKey = angleDef.key;
   const status = document.getElementById("edit-register-status");
-  if (status) status.textContent = "Capturing…";
+  const btn = document.getElementById("edit-capture-angle-btn");
+  if (status) status.textContent = `Scanning ${angleDef.label}… Hold steady.`;
+  if (btn) btn.disabled = true;
   try {
-    const _faceapi = typeof faceapi !== "undefined" ? faceapi : window.faceapi;
+    await ensureModels();
+    // Use same multi-frame capture as main registration
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    canvas.getContext("2d").drawImage(video, 0, 0);
-    const result = await _faceapi
-      .detectSingleFace(canvas, new _faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
-      .withFaceLandmarks().withFaceDescriptor();
-    if (!result) { if (status) status.textContent = "No face detected. Try again."; return; }
-    _editAngle.descriptors[angleKey] = [Array.from(result.descriptor)];
-    _editAngle.angleData[angleKey] = canvas.toDataURL("image/jpeg", 0.8);
+    const { descriptors, bestFrameUrl } = await captureAngleVideo(video, canvas, angleDef);
+    if (!descriptors || descriptors.length < 1) {
+      if (status) status.textContent = `No quality frames captured for ${angleDef.label}. Try again.`;
+      if (btn) btn.disabled = false;
+      return;
+    }
+    _editAngle.descriptors[angleKey] = descriptors;
+    _editAngle.angleData[angleKey] = bestFrameUrl || "";
     _editAngle.index++;
-    if (status) status.textContent = `✅ ${angleKey} captured!`;
+    if (status) status.textContent = `✅ ${angleDef.label} captured (${descriptors.length} frames)!`;
     updateEditAngleUI();
   } catch (err) {
     if (status) status.textContent = "Error: " + err.message;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -3086,6 +3323,9 @@ function saveEditStudent() {
     updatedOn: new Date().toISOString(),
     ...faceUpdate,
   };
+  // Recompute averaged descriptor if face was updated
+  computeAndCacheAvgDescriptor(state.students[idx]);
+  saveAvgDescriptors();
   state.attendances = state.attendances.map(a =>
     a.studentId === id
       ? { ...a, name, roll, class: className, studentPhone, parentPhone }
@@ -3096,10 +3336,35 @@ function saveEditStudent() {
 }
 
 // ─── EXPORT CSV ───────────────────────────────────────────────
+// ─── Get currently filtered attendance records ────────────────
+function getFilteredAttendanceRecords() {
+  const search    = (document.getElementById('att-search')?.value || '').toLowerCase().trim();
+  const filterCls = document.getElementById('att-filter-class')?.value || '';
+  const filterDt  = document.getElementById('att-filter-date')?.value  || '';
+  const filterWa  = document.getElementById('att-filter-wa')?.value    || '';
+  const sort      = document.getElementById('att-sort')?.value || 'newest';
+
+  let records = state.attendances.filter(a => {
+    if (search && !((a.name||'').toLowerCase().includes(search) || (a.roll||'').toLowerCase().includes(search) || (a.class||'').toLowerCase().includes(search))) return false;
+    if (filterCls && a.class !== filterCls) return false;
+    if (filterDt  && a.dateKey !== filterDt) return false;
+    if (filterWa === 'sent'    && !a.waSent) return false;
+    if (filterWa === 'pending' &&  a.waSent) return false;
+    return true;
+  });
+
+  if (sort === 'newest') records.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+  else if (sort === 'oldest') records.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+  else if (sort === 'name') records.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+  else if (sort === 'class') records.sort((a,b) => (a.class||'').localeCompare(b.class||''));
+  return records;
+}
+
 function exportAttendanceCSV() {
-  if (!state.attendances.length) { alert("No attendance records to export."); return; }
+  const records = getFilteredAttendanceRecords();
+  if (!records.length) { alert("No records to export (check your filters)."); return; }
   const headers = ["Date", "Time", "Student Name", "Roll No", "Class", "Student Phone", "Parent Phone", "Match %", "WA Sent"];
-  const rows = state.attendances.map(r => [
+  const rows = records.map(r => [
     r.dateLabel    || r.date,
     r.timeLabel    || "",
     r.name, r.roll, r.class,
@@ -3120,10 +3385,11 @@ function exportAttendanceCSV() {
 
 // ─── EXPORT PDF ───────────────────────────────────────────────
 function exportAttendancePDF() {
-  if (!state.attendances.length) { alert("No attendance records to export."); return; }
+  const records = getFilteredAttendanceRecords();
+  if (!records.length) { alert("No records to export (check your filters)."); return; }
   const instituteName = escapeHtml(state.settings.instituteName || "Unacademy Gwalior Branch");
   const exportDate    = formatDateTime(new Date());
-  const tableRows = state.attendances.map((r, i) => `
+  const tableRows = records.map((r, i) => `
     <tr style="background:${i % 2 === 0 ? "#f8fafc" : "#fff"};">
       <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">${escapeHtml(r.dateLabel || r.date)}</td>
       <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;">${escapeHtml(r.timeLabel || "")}</td>
@@ -3146,7 +3412,7 @@ function exportAttendancePDF() {
   @media print{body{padding:0;}.no-print{display:none;}}
   </style></head><body>
   <div class="header"><h1>📋 Attendance Report</h1><p>${instituteName}</p></div>
-  <div class="meta"><span>📅 Exported: ${exportDate}</span><span>👥 Total Records: ${state.attendances.length}</span><span>🎓 Students: ${state.students.length}</span></div>
+  <div class="meta"><span>📅 Exported: ${exportDate}</span><span>👥 Total Records: ${records.length}</span><span>🎓 Students: ${state.students.length}</span></div>
   <table><thead><tr><th>Date</th><th>Time</th><th>Student</th><th>Roll No</th><th>Class</th><th>Match %</th><th>WA Sent</th></tr></thead>
   <tbody>${tableRows}</tbody></table>
   <div class="footer">Generated by FaceScan Attendance · ${exportDate}</div>

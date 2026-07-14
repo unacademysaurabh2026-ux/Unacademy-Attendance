@@ -1060,7 +1060,7 @@ async function startAttendanceCamera() {
   }
 }
 
-// Lightweight loop — just draws face boxes, no matching
+// Lightweight loop — draws face boxes + background match with averaged descriptors
 let _facePreviewTimerId = null;
 async function beginFacePreviewLoop() {
   if (_facePreviewTimerId) clearInterval(_facePreviewTimerId);
@@ -1072,28 +1072,48 @@ async function beginFacePreviewLoop() {
       const detections = await _faceapi
         .detectAllFaces(dom.attendanceVideo,
           new _faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-        .withFaceLandmarks();
+        .withFaceLandmarks()
+        .withFaceDescriptors();
       clearOverlayCanvas();
-      const camBox = document.getElementById("attendance-camera-box");
+      const camBox  = document.getElementById("attendance-camera-box");
+      const nameStrip = document.getElementById("scan-name-strip");
+
       if (detections && detections.length > 0) {
         drawFaceBoxes(detections);
-        const nameStrip = document.getElementById("scan-name-strip");
-        if (nameStrip) {
-          nameStrip.textContent = "👤 Face detected — press Scan Now";
-          nameStrip.style.background = "rgba(14,165,233,0.5)";
+
+        // ── Fast background match using averaged descriptors ──
+        const descriptor = Array.from(detections[0].descriptor);
+        const threshold  = Number(state.settings.matchThreshold);
+        let bestName = null;
+        let bestDist = Infinity;
+
+        for (const student of state.students) {
+          const avg = getAvgDescriptor(student);
+          if (!avg) continue;
+          const dist = descriptorDistance(descriptor, avg);
+          if (dist < bestDist) { bestDist = dist; bestName = student.name; }
         }
-        // ── Green circle glow when face detected ──
+
+        const identified = bestDist <= threshold;
+
+        if (nameStrip) {
+          nameStrip.textContent = identified
+            ? `✅ ${bestName} — press Scan Now`
+            : "👤 Face detected — press Scan Now";
+          nameStrip.style.background = identified
+            ? "rgba(34,197,94,0.6)"
+            : "rgba(14,165,233,0.5)";
+        }
         if (camBox) {
-          camBox.style.borderColor = "rgba(34,197,94,0.95)";
-          camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(34,197,94,0.7),0 0 100px rgba(34,197,94,0.4),0 0 140px rgba(34,197,94,0.2)";
+          camBox.style.borderColor = identified
+            ? "rgba(34,197,94,0.95)"
+            : "rgba(255,255,255,0.9)";
+          camBox.style.boxShadow = identified
+            ? "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(34,197,94,0.7),0 0 100px rgba(34,197,94,0.4)"
+            : "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25)";
         }
       } else {
-        const nameStrip = document.getElementById("scan-name-strip");
-        if (nameStrip) {
-          nameStrip.textContent = "";
-          nameStrip.style.background = "transparent";
-        }
-        // ── White circle glow when no face ──
+        if (nameStrip) { nameStrip.textContent = ""; nameStrip.style.background = "transparent"; }
         if (camBox) {
           camBox.style.borderColor = "rgba(255,255,255,0.9)";
           camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25),0 0 140px rgba(255,255,255,0.1)";

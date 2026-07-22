@@ -2155,15 +2155,15 @@ async function testSmsGatewaySlot(idx) {
   }
 }
 
+// ─── SMS Count via Google Sheet ───────────────────────────────
+let _smsCountCache = {}; // { slotIndex: count } for today
+let _smsCountDate  = ""; // today's date when cache was loaded
+
 function getSmsCountTodayForSlot(slotIdx) {
   const today = getLocalDateKey(new Date());
   if (_smsCountDate && _smsCountDate !== today) _smsCountCache = {};
   return _smsCountCache[slotIdx] || 0;
 }
-
-// ─── SMS Count via Google Sheet ───────────────────────────────
-let _smsCountCache = {}; // { slotIndex: count } for today
-let _smsCountDate  = ""; // today's date when cache was loaded
 
 async function loadSmsCountFromSheet() {
   try {
@@ -2195,13 +2195,6 @@ async function incrementSmsCountForSlot(slotIdx) {
       increment: 1,
     }))}`);
   } catch(e) { console.warn("SMS count update failed:", e); }
-}
-
-function getSmsCountTodayForSlot(slotIdx) {
-  const today = getLocalDateKey(new Date());
-  // Reset cache if date changed
-  if (_smsCountDate && _smsCountDate !== today) _smsCountCache = {};
-  return _smsCountCache[slotIdx] || 0;
 }
 
 function getSmsCountToday() {

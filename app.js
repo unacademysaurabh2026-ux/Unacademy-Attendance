@@ -6,7 +6,7 @@
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 // Edit this list to add/remove devices — changes here apply on all devices
 const HARDCODED_SMS_DEVICES = [
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
+  // { url: "http://192.168.1.100:8080", user: "admin", pass: "password", label: "Device 1 - BSNL SIM 1" },
   // { url: "http://192.168.1.101:8080", user: "admin", pass: "password", label: "Device 2 - BSNL SIM 2" },
   // { url: "http://192.168.1.102:8080", user: "admin", pass: "password", label: "Device 3 - BSNL SIM 3" },
   // Uncomment and fill in your actual device details above
@@ -1060,7 +1060,7 @@ async function startAttendanceCamera() {
   }
 }
 
-// Lightweight loop — draws face boxes + background match with averaged descriptors
+// Lightweight loop — just draws face boxes, no matching
 let _facePreviewTimerId = null;
 async function beginFacePreviewLoop() {
   if (_facePreviewTimerId) clearInterval(_facePreviewTimerId);
@@ -1072,45 +1072,19 @@ async function beginFacePreviewLoop() {
       const detections = await _faceapi
         .detectAllFaces(dom.attendanceVideo,
           new _faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-        .withFaceLandmarks()
-        .withFaceDescriptors();
+        .withFaceLandmarks();
       clearOverlayCanvas();
-      const camBox  = document.getElementById("attendance-camera-box");
+      const camBox = document.getElementById("attendance-camera-box");
       const nameStrip = document.getElementById("scan-name-strip");
-
       if (detections && detections.length > 0) {
         drawFaceBoxes(detections);
-
-        // ── Fast background match using averaged descriptors ──
-        const descriptor = Array.from(detections[0].descriptor);
-        const threshold  = Number(state.settings.matchThreshold);
-        let bestName = null;
-        let bestDist = Infinity;
-
-        for (const student of state.students) {
-          const avg = getAvgDescriptor(student);
-          if (!avg) continue;
-          const dist = descriptorDistance(descriptor, avg);
-          if (dist < bestDist) { bestDist = dist; bestName = student.name; }
-        }
-
-        const identified = bestDist <= threshold;
-
         if (nameStrip) {
-          nameStrip.textContent = identified
-            ? `✅ ${bestName} — press Scan Now`
-            : "👤 Face detected — press Scan Now";
-          nameStrip.style.background = identified
-            ? "rgba(34,197,94,0.6)"
-            : "rgba(14,165,233,0.5)";
+          nameStrip.textContent = "👤 Face detected — press Scan Now";
+          nameStrip.style.background = "rgba(14,165,233,0.5)";
         }
         if (camBox) {
-          camBox.style.borderColor = identified
-            ? "rgba(34,197,94,0.95)"
-            : "rgba(255,255,255,0.9)";
-          camBox.style.boxShadow = identified
-            ? "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(34,197,94,0.7),0 0 100px rgba(34,197,94,0.4)"
-            : "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25)";
+          camBox.style.borderColor = "rgba(14,165,233,0.8)";
+          camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(14,165,233,0.6),0 0 100px rgba(14,165,233,0.3)";
         }
       } else {
         if (nameStrip) { nameStrip.textContent = ""; nameStrip.style.background = "transparent"; }
@@ -2183,14 +2157,58 @@ async function testSmsGatewaySlot(idx) {
 
 function getSmsCountTodayForSlot(slotIdx) {
   const today = getLocalDateKey(new Date());
-  return parseInt(localStorage.getItem('sms-count-' + today + '-slot' + slotIdx) || '0');
+  if (_smsCountDate && _smsCountDate !== today) _smsCountCache = {};
+  return _smsCountCache[slotIdx] || 0;
 }
 
-function incrementSmsCountForSlot(slotIdx) {
+// ─── SMS Count via Google Sheet ───────────────────────────────
+let _smsCountCache = {}; // { slotIndex: count } for today
+let _smsCountDate  = ""; // today's date when cache was loaded
+
+async function loadSmsCountFromSheet() {
+  try {
+    const url = state.settings.sheetsUrl;
+    if (!url) return;
+    const res = await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "getSmsCount" }))}`);
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.counts)) {
+      _smsCountCache = {};
+      _smsCountDate  = data.today;
+      data.counts.forEach(c => { _smsCountCache[c.slotIndex] = c.count; });
+    }
+  } catch(e) { console.warn("SMS count load failed:", e); }
+}
+
+async function incrementSmsCountForSlot(slotIdx) {
+  const slots = getSmsSlots();
+  const label = slots[slotIdx]?.label || `Device ${slotIdx + 1}`;
+  // Update local cache immediately
+  _smsCountCache[slotIdx] = (_smsCountCache[slotIdx] || 0) + 1;
+  // Update Google Sheet in background
+  try {
+    const url = state.settings.sheetsUrl;
+    if (!url) return;
+    await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({
+      action: "updateSmsCount",
+      slotIndex: slotIdx,
+      label,
+      increment: 1,
+    }))}`);
+  } catch(e) { console.warn("SMS count update failed:", e); }
+}
+
+function getSmsCountTodayForSlot(slotIdx) {
   const today = getLocalDateKey(new Date());
-  const key = 'sms-count-' + today + '-slot' + slotIdx;
-  const count = parseInt(localStorage.getItem(key) || '0') + 1;
-  localStorage.setItem(key, count);
+  // Reset cache if date changed
+  if (_smsCountDate && _smsCountDate !== today) _smsCountCache = {};
+  return _smsCountCache[slotIdx] || 0;
+}
+
+function getSmsCountToday() {
+  const slots = getSmsSlots();
+  let total = 0;
+  for (let i = 0; i < slots.length; i++) total += getSmsCountTodayForSlot(i);
+  return total;
 }
 
 function getActiveSlot() {
@@ -2201,8 +2219,11 @@ function getActiveSlot() {
   return null;
 }
 
+function incrementSmsCount() {
+  // Handled per-slot in autoSendSms
+}
+
 function loadSmsGatewayUrl() {
-  // Migrate legacy single-device settings to new multi-slot system
   const legacyUrl  = localStorage.getItem('sms-gateway-url')  || '';
   const legacyUser = localStorage.getItem('sms-gateway-user') || '';
   const legacyPass = localStorage.getItem('sms-gateway-pass') || '';
@@ -2210,8 +2231,11 @@ function loadSmsGatewayUrl() {
     saveSmsSlots([{ url: legacyUrl, user: legacyUser, pass: legacyPass, label: 'Device 1' }]);
     localStorage.removeItem('sms-gateway-url');
   }
-  renderSmsSlots();
-  updateSmsUsageDisplay();
+  // Load SMS count from Google Sheet then render
+  loadSmsCountFromSheet().then(() => {
+    renderSmsSlots();
+    updateSmsUsageDisplay();
+  });
 }
 
 function updateSmsUsageDisplay() {
@@ -2220,25 +2244,8 @@ function updateSmsUsageDisplay() {
   renderSmsSlots();
 }
 
-// testSmsGateway replaced by testSmsGatewaySlot per-device
-
 // ─── SMS / WhatsApp Split Panel ───────────────────────────────
 const SMS_DAILY_LIMIT = 100;
-
-function getSmsCountToday() {
-  const slots = getSmsSlots();
-  if (slots.length === 0) {
-    const today = getLocalDateKey(new Date());
-    return parseInt(localStorage.getItem('sms-count-' + today) || '0');
-  }
-  let total = 0;
-  for (let i = 0; i < slots.length; i++) total += getSmsCountTodayForSlot(i);
-  return total;
-}
-
-function incrementSmsCount() {
-  // Increment is now handled per-slot in autoSendSms
-}
 
 function showSmsSplitPanel() {
   const today = getLocalDateKey(new Date());
@@ -2310,39 +2317,50 @@ async function autoSendSms(record) {
   if (!record.parentPhone) return;
   if (record.waSent) return;
 
-  const activeSlotInfo = getActiveSlot();
-  if (!activeSlotInfo) return; // all slots exhausted
-
-  const { slot, idx } = activeSlotInfo;
-  const baseUrl = slot.url.trim().replace(/\/$/, '');
-  const user = slot.user || '';
-  const pass = slot.pass || '';
-  const msg  = 'Dear Parent, ' + record.name + ' has marked attendance today at ' + record.formattedTime + '. - Unacademy Gwalior';
+  const slots = getSmsSlots();
+  if (!slots.length) return;
 
   let formattedPhone = record.parentPhone.replace(/\D/g, '');
   if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
   else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
 
-  try {
-    const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + btoa(user + ':' + pass),
-      },
-      body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
-    });
-    if (resp.ok || resp.status === 202) {
-      incrementSmsCountForSlot(idx);
-      updateSmsUsageDisplay();
-      markWaSent(record.id);
-      console.log('Auto SMS sent via Device ' + (idx+1) + ' to', record.name);
-    } else {
-      console.error('Auto SMS failed:', resp.status);
+  const msg = 'Dear Parent, ' + record.name + ' has marked attendance today at ' + record.formattedTime + '. - ' + (state.settings.instituteName || 'Institute');
+
+  // Try slots starting from active slot, fail-based switching for recharge issues
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    if (!slot.url) continue;
+    // Skip if slot already at daily limit
+    if (getSmsCountTodayForSlot(i) >= SMS_DAILY_LIMIT) continue;
+
+    const baseUrl = slot.url.trim().replace(/\/$/, '');
+    try {
+      const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + btoa((slot.user || '') + ':' + (slot.pass || '')),
+        },
+        body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (resp.ok || resp.status === 202) {
+        // Success — update count in Sheet
+        await incrementSmsCountForSlot(i);
+        updateSmsUsageDisplay();
+        markWaSent(record.id);
+        console.log('Auto SMS sent via Device ' + (i + 1) + ' to', record.name);
+        return; // done
+      } else {
+        console.warn('Device ' + (i + 1) + ' failed (status ' + resp.status + ') — trying next slot');
+        // Fall through to next slot (fail-based switching)
+      }
+    } catch(e) {
+      console.warn('Device ' + (i + 1) + ' error:', e.message, '— trying next slot');
+      // Fall through to next slot
     }
-  } catch(e) {
-    console.error('Auto SMS error:', e);
   }
+  console.error('All SMS slots failed for', record.name);
 }
 
 async function sendSmsAlert(recordId, phone, name, time, btn) {

@@ -1029,7 +1029,6 @@ async function startAttendanceCamera() {
   const started = await startCamera(dom.attendanceVideo, "attendance");
   if (!started) return;
 
-  // Reset scanning state
   state.scanningActive = false;
   state._unknownFaceFirstSeenAt = null;
   state._unknownFaceCaptured    = false;
@@ -1045,12 +1044,10 @@ async function startAttendanceCamera() {
       dom.faceOverlay.width  = dom.faceOverlay.offsetWidth;
       dom.faceOverlay.height = dom.faceOverlay.offsetHeight;
     }
-    // Camera is live — show Scan Now button, hide Start Camera button
     showScanNowButton();
     dom.attendanceStatus.textContent = "Camera ready. Press 'Scan Now' to start identification.";
     dom.recognitionTitle.textContent = "Ready";
     dom.recognitionCopy.textContent  = "Press Scan Now to identify a student.";
-    // Start a lightweight face-box-only loop (no matching, just overlay drawing)
     beginFacePreviewLoop();
   } catch (err) {
     dom.attendanceStatus.textContent = err.message;
@@ -1074,7 +1071,7 @@ async function beginFacePreviewLoop() {
           new _faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
         .withFaceLandmarks();
       clearOverlayCanvas();
-      const camBox = document.getElementById("attendance-camera-box");
+      const camBox    = document.getElementById("attendance-camera-box");
       const nameStrip = document.getElementById("scan-name-strip");
       if (detections && detections.length > 0) {
         drawFaceBoxes(detections);
@@ -1097,16 +1094,12 @@ async function beginFacePreviewLoop() {
   }, 500);
 }
 
-// ─── Freeze a video frame onto an overlay canvas ─────────────
 function freezeVideoFrame(videoEl) {
-  // Use a dedicated full-size freeze canvas layered over the video
   let fc = document.getElementById("freeze-frame-canvas");
   if (!fc) {
     fc = document.createElement("canvas");
     fc.id = "freeze-frame-canvas";
-    fc.style.cssText =
-      "position:absolute;top:0;left:0;width:100%;height:100%;" +
-      "object-fit:cover;border-radius:inherit;z-index:5;";
+    fc.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;z-index:5;";
     const box = document.getElementById("attendance-camera-box");
     if (box) box.appendChild(fc);
   }
@@ -1122,7 +1115,6 @@ function unfreezeVideoFrame() {
   if (fc) fc.style.display = "none";
 }
 
-// ─── Single-shot recognition on frozen frame ─────────────────
 async function runFrozenFrameRecognition(frozenCanvas) {
   state.scanningActive          = true;
   state._unknownFaceFirstSeenAt = null;
@@ -1130,12 +1122,8 @@ async function runFrozenFrameRecognition(frozenCanvas) {
 
   try {
     const _faceapi = typeof faceapi !== "undefined" ? faceapi : window.faceapi;
-    // Run detection on the frozen canvas (not the live video)
     const detections = await _faceapi
-      .detectAllFaces(
-        frozenCanvas,
-        new _faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }),
-      )
+      .detectAllFaces(frozenCanvas, new _faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
       .withFaceLandmarks()
       .withFaceDescriptors();
 
@@ -1148,17 +1136,12 @@ async function runFrozenFrameRecognition(frozenCanvas) {
       return;
     }
 
-    // Use the largest / primary face
     const faces = detections
       .slice(0, LIVE_MULTI_FACE_MAX)
-      .sort((a, b) =>
-        b.detection.box.width * b.detection.box.height -
-        a.detection.box.width * a.detection.box.height
-      );
+      .sort((a, b) => b.detection.box.width * b.detection.box.height - a.detection.box.width * a.detection.box.height);
     const primaryFace  = faces[0];
     const detScore     = primaryFace.detection.score ?? 0.8;
-    const dynThreshold = Number(state.settings.matchThreshold) +
-      (detScore < 0.7 ? LIVE_DYNAMIC_THRESHOLD_BOOST : 0);
+    const dynThreshold = Number(state.settings.matchThreshold) + (detScore < 0.7 ? LIVE_DYNAMIC_THRESHOLD_BOOST : 0);
     const descriptor   = Array.from(primaryFace.descriptor);
     const matches      = rankStudentsByMultiEmbedding(descriptor, dynThreshold).slice(0, 5);
 
@@ -1175,13 +1158,11 @@ async function runFrozenFrameRecognition(frozenCanvas) {
     const confidentMatch = isSelectableMatch(bestMatch, dynThreshold);
 
     if (!confidentMatch) {
-      // ── Unidentified face ─────────────────────────────────
       playSound("unknown");
       dom.attendanceStatus.textContent =
         "Unregistered or unclear face. Closest: " +
         (bestMatch.student?.name || "unknown") +
         ` (${Math.round(distanceToPercent(bestMatch.distance))}% match)`;
-      // Save unidentified entry
       const capturedAt   = new Date().toISOString();
       const imageDataUrl = frozenCanvas.toDataURL("image/jpeg", 0.85);
       saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch.student?.name || "");
@@ -1191,10 +1172,8 @@ async function runFrozenFrameRecognition(frozenCanvas) {
       return;
     }
 
-    // ── Minimum % guard ──────────────────────────────────────────
     const minPct = Number(state.settings.minMatchPercent ?? 40);
-    const matchPctCheck = bestMatch.distance !== null
-      ? Math.round(distanceToPercent(bestMatch.distance)) : 0;
+    const matchPctCheck = bestMatch.distance !== null ? Math.round(distanceToPercent(bestMatch.distance)) : 0;
     if (matchPctCheck < minPct) {
       playSound("unknown");
       dom.attendanceStatus.textContent =
@@ -1208,12 +1187,10 @@ async function runFrozenFrameRecognition(frozenCanvas) {
       return;
     }
 
-    // ── Confident match → auto-save ───────────────────────────
     const now      = new Date();
     const dateKey  = getLocalDateKey(now);
     const matchInfo = matches.find(m => m.student.id === bestMatch.student.id) || bestMatch;
-    const matchPct  = matchInfo.distance !== null
-      ? Math.round(distanceToPercent(matchInfo.distance)) : null;
+    const matchPct  = matchInfo.distance !== null ? Math.round(distanceToPercent(matchInfo.distance)) : null;
 
     const record = {
       id:           `ATT-${Date.now()}`,
@@ -1223,15 +1200,13 @@ async function runFrozenFrameRecognition(frozenCanvas) {
       class:        bestMatch.student.class,
       studentPhone: bestMatch.student.studentPhone,
       parentPhone:  bestMatch.student.parentPhone,
-      dateKey,
-      date:         dateKey,
+      dateKey, date: dateKey,
       timestamp:    now.toISOString(),
       dateLabel:    formatDate(now),
       timeLabel:    formatTime(now),
       formattedTime:formatDateTime(now),
       scanPhoto:    "",
-      matchDistance: matchInfo.distance != null && isFinite(matchInfo.distance)
-        ? Number(matchInfo.distance.toFixed(4)) : null,
+      matchDistance: matchInfo.distance != null && isFinite(matchInfo.distance) ? Number(matchInfo.distance.toFixed(4)) : null,
       matchPercent:  matchPct,
       syncState:    "local-only",
       waSent:       false,
@@ -1242,17 +1217,14 @@ async function runFrozenFrameRecognition(frozenCanvas) {
     autoSendSms(record);
     playSound("match");
 
-    // Show name strip on frozen frame immediately
     const nameStrip = document.getElementById("scan-name-strip");
     if (nameStrip) {
       nameStrip.textContent = `✅ ${record.name}`;
       nameStrip.style.background = "linear-gradient(90deg,#059669,#0ea5e9)";
     }
 
-    // Show toast, then unfreeze and reset
     showQuickToast(record);
 
-    // Reset state
     state.attendancePhoto             = null;
     state.selectedAttendanceStudentId = null;
     state._pendingAttendanceRecord    = null;
@@ -1276,21 +1248,15 @@ async function runFrozenFrameRecognition(frozenCanvas) {
   }
 }
 
-// Called when user presses "Scan Now" green button
 async function activateScan() {
   if (state.currentCameraMode !== "attendance" || !dom.attendanceVideo.srcObject) {
     dom.attendanceStatus.textContent = "Camera not ready. Please wait.";
     return;
   }
-  // Stop preview loop
   if (_facePreviewTimerId) { clearInterval(_facePreviewTimerId); _facePreviewTimerId = null; }
   hideScanNowButton();
-
-  // ── Freeze the frame instantly on button press ───────────────
   const frozenCanvas = freezeVideoFrame(dom.attendanceVideo);
   dom.attendanceStatus.textContent = "Identifying…";
-
-  // ── Run recognition on the frozen frame (single shot) ────────
   await runFrozenFrameRecognition(frozenCanvas);
 }
 
@@ -1303,9 +1269,7 @@ function showScanNowButton() {
     btn.id        = "scan-now-btn";
     btn.type      = "button";
     btn.innerHTML = "🔍 Scan Now";
-    btn.className =
-      "flex-1 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white py-4 " +
-      "rounded-3xl text-xl font-bold flex items-center justify-center gap-x-2 transition-all w-full";
+    btn.className = "flex-1 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white py-4 rounded-3xl text-xl font-bold flex items-center justify-center gap-x-2 transition-all w-full";
     btn.onclick = activateScan;
     dom.captureAttendanceButton.parentElement.appendChild(btn);
   }
@@ -1318,25 +1282,24 @@ function hideScanNowButton() {
 }
 
 function resetToScanReady() {
-  // After a scan (success or fail), go back to "Scan Now" state
   state.scanningActive = false;
-  if (state.liveRecognitionTimerId) {
-    clearInterval(state.liveRecognitionTimerId);
-    state.liveRecognitionTimerId = null;
-  }
+  if (state.liveRecognitionTimerId) { clearInterval(state.liveRecognitionTimerId); state.liveRecognitionTimerId = null; }
   unfreezeVideoFrame();
   resetLiveRecognitionSelection();
   showScanNowButton();
   clearOverlayCanvas();
   const nameStrip = document.getElementById("scan-name-strip");
   if (nameStrip) { nameStrip.textContent = ""; nameStrip.style.background = "transparent"; }
+  const camBox = document.getElementById("attendance-camera-box");
+  if (camBox) {
+    camBox.style.borderColor = "rgba(255,255,255,0.9)";
+    camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25),0 0 140px rgba(255,255,255,0.1)";
+  }
   dom.attendanceStatus.textContent = "Ready. Press 'Scan Now' for next student.";
   dom.recognitionTitle.textContent = "Ready";
   dom.recognitionCopy.textContent  = "Press Scan Now to identify a student.";
   beginFacePreviewLoop();
 }
-
-
 
 function syncAttendanceControls(cameraStarted) {
   // Only toggle Start Camera ↔ Confirm buttons

@@ -4,24 +4,18 @@
 // ============================================================
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
-// Edit this list to add/remove devices — changes here apply on all devices
 const HARDCODED_SMS_DEVICES = [
-  // { url: "http://192.168.1.100:8080", user: "admin", pass: "password", label: "Device 1 - BSNL SIM 1" },
-  // { url: "http://192.168.1.101:8080", user: "admin", pass: "password", label: "Device 2 - BSNL SIM 2" },
-  // { url: "http://192.168.1.102:8080", user: "admin", pass: "password", label: "Device 3 - BSNL SIM 3" },
-  // Uncomment and fill in your actual device details above
+  // { url: "http://192.168.1.100:8080", user: "admin", pass: "password", label: "Device 1" },
 ];
-// If HARDCODED_SMS_DEVICES has entries, they will be used instead of localStorage devices
-// ─────────────────────────────────────────────────────────────
 
-
+// ─── Storage Keys ────────────────────────────────────────────
 const STORAGE_KEYS = {
   settings:     "face-attendance-settings",
   students:     "face-attendance-students",
   attendance:   "face-attendance-log",
   trash:        "face-attendance-trash",
   unidentified: "face-attendance-unidentified",
-  avgDescs:     "face-attendance-avg-descriptors", // fast-scan cache
+  avgDescs:     "face-attendance-avg-descriptors",
 };
 
 // ─── Defaults ────────────────────────────────────────────────
@@ -47,13 +41,9 @@ const REG_DETECTION_SCORE_MIN = 0.68;
 
 // ─── Angle definitions ───────────────────────────────────────
 const ANGLES = [
-  { key: "front",      label: "😐 Front",       icon: "😐", instruction: "Look straight at the camera" },
-  { key: "left",       label: "← Left",          icon: "←",  instruction: "Slowly turn head to the LEFT" },
-  { key: "right",      label: "Right →",         icon: "→",  instruction: "Slowly turn head to the RIGHT" },
-  { key: "up",         label: "↑ Up",            icon: "↑",  instruction: "Tilt head slightly UP (for cap wearers)" },
-  { key: "down",       label: "↓ Down",          icon: "↓",  instruction: "Tilt head slightly DOWN (for hair over face)" },
-  { key: "tilt_left",  label: "↗ Tilt Left",    icon: "↗",  instruction: "Tilt head diagonally to upper-left" },
-  { key: "tilt_right", label: "↘ Tilt Right",   icon: "↘",  instruction: "Tilt head diagonally to upper-right" },
+  { key: "front", label: "😐 Front Face", icon: "😐", instruction: "Look straight at the camera" },
+  { key: "left",  label: "← Left Face",  icon: "←",  instruction: "Slowly turn your head to the LEFT" },
+  { key: "right", label: "Right Face →", icon: "→",  instruction: "Slowly turn your head to the RIGHT" },
 ];
 
 // ─── Live attendance constants ────────────────────────────────
@@ -79,12 +69,12 @@ const state = {
 
   registerPhoto: null,
   registerDescriptors: null,
-  angleData: { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null },
+  angleData: { front: null, left: null, right: null },
   currentAngleIndex: 0,
   isUpdateMode: false,
 
   // Upload-from-photo registration
-  uploadedAngleFiles: { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null },
+  uploadedAngleFiles: { front: null, left: null, right: null },
 
   attendancePhoto: null,
   liveMatches: [],
@@ -101,7 +91,8 @@ const state = {
   overlayCtx: null,
   modelsLoaded: false,
   modalRecord: null,
-  avgDescriptors: {}, // studentId → averaged descriptor for fast scan
+  activeSection: "home",
+  avgDescriptors: {},
 
   regCapturing: false,
   regFrameTimerId: null,
@@ -121,7 +112,6 @@ document.addEventListener("DOMContentLoaded", initApp);
 
 
 // ─── Attendance circle size (original) ───────────────────────
-// No fullscreen size overrides — circle stays same size in fullscreen
 (function patchAttendanceCircleSize() {
   if (document.getElementById("attendance-circle-size")) return;
   const s = document.createElement("style");
@@ -139,11 +129,18 @@ document.addEventListener("DOMContentLoaded", initApp);
         height: min(88vw, 340px) !important;
       }
     }
+    :fullscreen #attendance-camera-box,
+    :-webkit-full-screen #attendance-camera-box {
+      width:  min(85vh, 560px) !important;
+      height: min(85vh, 560px) !important;
+      aspect-ratio: 1 / 1 !important;
+    }
+
   `;
   document.head.appendChild(s);
 })();
 
-// ─── Fullscreen background fix (no circle resize) ────────────
+// ─── Fullscreen rectangle fix ────────────────────────────────
 (function injectFullscreenFix() {
   if (document.getElementById("fullscreen-circle-fix")) return;
   const s = document.createElement("style");
@@ -152,6 +149,12 @@ document.addEventListener("DOMContentLoaded", initApp);
     :fullscreen #attendance-scan-section,
     :-webkit-full-screen #attendance-scan-section {
       background: #020617 !important;
+    }
+    :fullscreen #attendance-camera-box,
+    :-webkit-full-screen #attendance-camera-box {
+      box-shadow: 0 0 0 4px rgba(255,255,255,0.2),
+                  0 0 60px rgba(255,255,255,0.55),
+                  0 0 100px rgba(255,255,255,0.25) !important;
     }
   `;
   document.head.appendChild(s);
@@ -168,11 +171,10 @@ function initApp() {
   showSection("home");
   setupOverlayCanvas();
   updateDashboardStats();
-  // Don't render heavy lists on startup — render only when tab is opened
   setTimeout(updateUnidentifiedBadge, 0);
   initAutoBackup();
   loadSmsGatewayUrl();
-  startUnidentifiedAutoCleanup(); // auto-delete unidentified after 5 min
+  startUnidentifiedAutoCleanup();
 }
 
 // ─── DOM assignment ───────────────────────────────────────────
@@ -257,49 +259,39 @@ function loadData() {
   state.attendances   = Array.isArray(savedAttendance)   ? savedAttendance.map(normalizeAttendance).filter(Boolean) : [];
   state.trash         = Array.isArray(savedTrash)        ? savedTrash : [];
   state.unidentified  = Array.isArray(savedUnidentified) ? savedUnidentified : [];
-
-  // Load cached averaged descriptors
   state.avgDescriptors = loadJson(STORAGE_KEYS.avgDescs, {});
-
-  // Migrate existing students silently on first load
   setTimeout(() => migrateAvgDescriptors(), 500);
 }
 
 // ─── Averaged descriptor helpers ─────────────────────────────
-// Compute + cache averaged descriptor for one student
+function averageDescriptors(descs) {
+  if (!descs || !descs.length) return null;
+  const len = descs[0].length;
+  const avg = new Array(len).fill(0);
+  for (const d of descs) for (let i = 0; i < len; i++) avg[i] += d[i];
+  for (let i = 0; i < len; i++) avg[i] /= descs.length;
+  return avg;
+}
 function computeAndCacheAvgDescriptor(student) {
   if (!student) return null;
   const descs = student.descriptors;
   const avg = Array.isArray(descs) && descs.length > 0
     ? averageDescriptors(descs)
     : (Array.isArray(student.descriptor) ? student.descriptor : null);
-  if (avg) {
-    state.avgDescriptors[student.id] = avg;
-  }
+  if (avg) state.avgDescriptors[student.id] = avg;
   return avg;
 }
-
-// Get averaged descriptor (from cache or compute on the fly)
 function getAvgDescriptor(student) {
   if (state.avgDescriptors[student.id]) return state.avgDescriptors[student.id];
   return computeAndCacheAvgDescriptor(student);
 }
-
-// Save avg descriptor cache to localStorage
 function saveAvgDescriptors() {
-  try {
-    localStorage.setItem(STORAGE_KEYS.avgDescs, JSON.stringify(state.avgDescriptors));
-  } catch (_) {}
+  try { localStorage.setItem(STORAGE_KEYS.avgDescs, JSON.stringify(state.avgDescriptors)); } catch(_) {}
 }
-
-// One-time silent migration for all existing students
 function migrateAvgDescriptors() {
   let changed = false;
-  for (const student of state.students) {
-    if (!state.avgDescriptors[student.id]) {
-      computeAndCacheAvgDescriptor(student);
-      changed = true;
-    }
+  for (const s of state.students) {
+    if (!state.avgDescriptors[s.id]) { computeAndCacheAvgDescriptor(s); changed = true; }
   }
   if (changed) saveAvgDescriptors();
 }
@@ -311,7 +303,6 @@ function saveData(immediate = false) {
   clearTimeout(_saveDataTimer);
   _saveDataTimer = setTimeout(_doSaveData, 800);
 }
-
 function _doSaveData() {
   try {
     localStorage.setItem(STORAGE_KEYS.settings,     JSON.stringify(state.settings));
@@ -320,7 +311,6 @@ function _doSaveData() {
     localStorage.setItem(STORAGE_KEYS.trash,        JSON.stringify(state.trash));
     localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
     updateDashboardStats();
-    // Only re-render the currently visible tab
     const active = state.activeSection;
     if (active === "records") {
       if (!dom.studentsListView?.classList.contains("hidden")) renderStudentsGrid();
@@ -328,16 +318,14 @@ function _doSaveData() {
     }
     if (active === "trash")        renderTrash();
     if (active === "unidentified") renderUnidentifiedList();
-  } catch (e) {
+  } catch(e) {
     console.error("saveData failed:", e);
     try {
-      const attendanceLight = state.attendances.map(a => ({ ...a, scanPhoto: "" }));
-      localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(attendanceLight));
+      const light = state.attendances.map(a => ({ ...a, scanPhoto: "" }));
+      localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(light));
       localStorage.setItem(STORAGE_KEYS.students,   JSON.stringify(state.students));
       updateDashboardStats();
-    } catch (e2) {
-      console.error("saveData fallback also failed:", e2);
-    }
+    } catch(e2) { console.error("saveData fallback failed:", e2); }
   }
 }
 
@@ -363,7 +351,7 @@ function updateClock() {
 
 function showSection(section) {
   if (state.scanLocked && section !== "attendance") {
-    return; // locked — can't navigate away
+    return;
   }
   state.activeSection = section;
   dom.sections.forEach(el => el.classList.add("hidden"));
@@ -382,11 +370,8 @@ function showSection(section) {
     if (section !== "register") resetRegisterCaptureUi();
     if (section !== "attendance") resetAttendanceCaptureUi();
   }
-  // Lazy render — only render when tab is actually opened
-  if (section === "records") {
-    requestAnimationFrame(() => showStudentsList());
-  }
-  if (section === "trash")   requestAnimationFrame(() => renderTrash());
+  if (section === "records")     requestAnimationFrame(() => showStudentsList());
+  if (section === "trash")       requestAnimationFrame(() => renderTrash());
   if (section === "unidentified") requestAnimationFrame(() => renderUnidentifiedList());
 }
 
@@ -612,17 +597,7 @@ async function captureCurrentAngle() {
   const idx = state.currentAngleIndex;
   if (idx >= ANGLES.length) return;
   const angle = ANGLES[idx];
-
-  // Reset progress ring for this angle
-  const ring = document.getElementById("reg-progress-ring");
-  if (ring) { ring.style.strokeDashoffset = "339.3"; ring.style.opacity = "0"; }
-  const glowRing = document.getElementById("reg-glow-ring");
-  if (glowRing) {
-    glowRing.style.borderColor = "rgba(255,255,255,0.9)";
-    glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(255,255,255,0.5)";
-  }
-
-  dom.registerStatus.textContent = `Scanning ${angle.label}… collecting 10 samples.`;
+  dom.registerStatus.textContent = `Scanning ${angle.label}… Hold steady.`;
   if (dom.captureAngleBtn) dom.captureAngleBtn.disabled = true;
   try {
     await ensureModels();
@@ -641,7 +616,7 @@ async function captureCurrentAngle() {
       thumb.style.borderStyle = "solid";
     }
     dom.registerStatus.textContent =
-      `✅ ${angle.label} captured (${descriptors.length} samples).` +
+      `✅ ${angle.label} captured (${descriptors.length} frames).` +
       (idx + 1 < ANGLES.length ? ` Now capture ${ANGLES[idx + 1].label}.` : " All angles done!");
     state.currentAngleIndex += 1;
     updateAngleUI();
@@ -673,56 +648,25 @@ function mergeAngleDescriptors() {
 async function captureAngleVideo(videoElement, canvasElement) {
   const collected = [];
   const photos    = [];
-  const TARGET    = REG_TARGET_EMBEDDINGS; // 10 per angle
-
-  // Update circular progress ring in register page
-  function updateRegProgressRing(count) {
-    const ring = document.getElementById("reg-progress-ring");
-    if (!ring) return;
-    const circumference = 2 * Math.PI * 54; // r=54
-    const progress = Math.min(count / TARGET, 1);
-    ring.style.strokeDashoffset = circumference * (1 - progress);
-    ring.style.stroke = progress >= 1 ? "#22c55e" : "#22c55e";
-    ring.style.opacity = progress > 0 ? "1" : "0";
-    // Green border when complete
-    const glowRing = document.getElementById("reg-glow-ring");
-    if (glowRing) {
-      if (progress >= 1) {
-        glowRing.style.borderColor = "#22c55e";
-        glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(34,197,94,0.7),0 0 60px rgba(34,197,94,0.4)";
-      } else {
-        glowRing.style.borderColor = "rgba(255,255,255,0.9)";
-        glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(255,255,255,0.5)";
-      }
-    }
-  }
-
+  const startTime = Date.now();
   return new Promise((resolve) => {
     state.regCapturing = true;
-    const MAX_WAIT_MS = 12000; // max 12 seconds fallback
-    const startTime   = Date.now();
-
     state.regFrameTimerId = setInterval(async () => {
       const elapsed = Date.now() - startTime;
-      const forceStop = elapsed >= MAX_WAIT_MS || !state.regCapturing;
-
-      if (collected.length >= TARGET || forceStop) {
+      if (elapsed >= REG_VIDEO_DURATION_MS || collected.length >= REG_TARGET_EMBEDDINGS || !state.regCapturing) {
         clearInterval(state.regFrameTimerId);
         state.regFrameTimerId = null;
         state.regCapturing = false;
-        updateRegProgressRing(collected.length);
         const final = storeMultipleEmbeddings(collected);
         resolve({ descriptors: final, bestFrameUrl: photos[0] || captureFrameAsDataUrl(videoElement, canvasElement) });
         return;
       }
-
       const result = await extractBestFrame(videoElement, canvasElement);
       if (result) {
         const { descriptor, dataUrl } = result;
         if (!isDuplicateDescriptor(descriptor, collected)) {
           collected.push(descriptor);
           if (photos.length < 2) photos.push(dataUrl);
-          updateRegProgressRing(collected.length);
         }
       }
     }, REG_FRAME_INTERVAL_MS);
@@ -734,11 +678,6 @@ async function captureRegisterPhoto() {
 }
 
 function resetAllAngles() {
-  if (state.regFrameTimerId) {
-    clearInterval(state.regFrameTimerId);
-    state.regFrameTimerId = null;
-    state.regCapturing = false;
-  }
   state.currentAngleIndex  = 0;
   state.angleData          = { front: null, left: null, right: null };
   state.registerDescriptors= null;
@@ -747,34 +686,34 @@ function resetAllAngles() {
   state.regCollectedPhotos = [];
   state.isUpdateMode       = false;
   state.uploadedAngleFiles = { front: null, left: null, right: null };
-
-  // Reset thumbnails
-  const icons = { front:"😐", left:"←", right:"→" };
-  for (const [key, icon] of Object.entries(icons)) {
-    const thumb = document.getElementById(`thumb-${key}`);
+  for (const angle of ANGLES) {
+    const thumb = document.getElementById(`thumb-${angle.key}`);
     if (thumb) {
-      thumb.innerHTML = icon;
+      thumb.innerHTML = `<span style="font-size:1.5rem;color:#475569;">${angle.icon}</span>`;
       thumb.style.borderColor = "";
       thumb.style.borderStyle = "dashed";
     }
   }
-
-  // Reset progress ring
-  const ring = document.getElementById("reg-progress-ring");
-  if (ring) { ring.style.strokeDashoffset = "339.3"; ring.style.opacity = "0"; }
-  const glowRing = document.getElementById("reg-glow-ring");
-  if (glowRing) {
-    glowRing.style.borderColor = "rgba(255,255,255,0.9)";
-    glowRing.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.1),0 0 30px rgba(255,255,255,0.5)";
+  // Reset upload previews
+  for (const key of ["front","left","right"]) {
+    const up = document.getElementById(`upload-preview-${key}`);
+    if (up) up.innerHTML = `<span class="text-2xl">${key === "front" ? "😐" : key === "left" ? "←" : "→"}</span><span class="text-xs text-slate-500 mt-1">Tap to upload</span>`;
   }
-
-  if (dom.registerVideo?.srcObject) {
-    dom.registerStatus.textContent = "Reset done. Capture each angle again.";
-  } else {
-    dom.registerStatus.textContent = "Reset done. Start camera to begin.";
+  const instrEl = document.getElementById("angle-instruction");
+  if (instrEl) instrEl.textContent = "Start camera, then capture each angle one by one.";
+  dom.registerPreview.classList.add("hidden");
+  dom.registerPhotoPreview.removeAttribute("src");
+  const submitBtn = document.getElementById("register-submit-btn");
+  if (submitBtn) {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "✅ Register Student";
   }
   updateAngleUI();
-  dom.registerPreview?.classList.add("hidden");
+  dom.registerStatus.textContent = "Angles reset. Start camera and capture again.";
+}
+
+function retakeRegisterPhoto() {
+  resetAllAngles();
 }
 
 // ─── UPLOAD FROM PHOTO (Register without live camera) ─────────
@@ -992,19 +931,15 @@ async function registerStudent(event) {
   else state.students[idx] = student;
   const submittedAngles = Object.values(state.angleData).filter(Boolean).length;
 
-  // Compute and cache averaged descriptor for fast scan
+  // Compute averaged descriptor for fast scan cache
   computeAndCacheAvgDescriptor(student);
   saveAvgDescriptors();
 
   saveData(true);
 
-  // ── Sync to Google Sheets ──────────────────────────────────
-  if (typeof syncStudentToSheets === "function") {
-    syncStudentToSheets(student).catch(e => console.warn("Sheet sync failed:", e));
-  }
-  if (typeof syncFaceDataToSheets === "function") {
-    syncFaceDataToSheets(student).catch(e => console.warn("Face sync failed:", e));
-  }
+  // Sync to Google Sheets
+  if (typeof syncStudentToSheets === "function") syncStudentToSheets(student).catch(e => console.warn("Sheet sync failed:", e));
+  if (typeof syncFaceDataToSheets === "function") syncFaceDataToSheets(student).catch(e => console.warn("Face sync failed:", e));
 
   // Reset form and UI after saving
   dom.registerForm.reset();
@@ -1029,6 +964,7 @@ async function startAttendanceCamera() {
   const started = await startCamera(dom.attendanceVideo, "attendance");
   if (!started) return;
 
+  // Reset scanning state
   state.scanningActive = false;
   state._unknownFaceFirstSeenAt = null;
   state._unknownFaceCaptured    = false;
@@ -1044,10 +980,12 @@ async function startAttendanceCamera() {
       dom.faceOverlay.width  = dom.faceOverlay.offsetWidth;
       dom.faceOverlay.height = dom.faceOverlay.offsetHeight;
     }
+    // Camera is live — show Scan Now button, hide Start Camera button
     showScanNowButton();
     dom.attendanceStatus.textContent = "Camera ready. Press 'Scan Now' to start identification.";
     dom.recognitionTitle.textContent = "Ready";
     dom.recognitionCopy.textContent  = "Press Scan Now to identify a student.";
+    // Start a lightweight face-box-only loop (no matching, just overlay drawing)
     beginFacePreviewLoop();
   } catch (err) {
     dom.attendanceStatus.textContent = err.message;
@@ -1062,7 +1000,7 @@ let _facePreviewTimerId = null;
 async function beginFacePreviewLoop() {
   if (_facePreviewTimerId) clearInterval(_facePreviewTimerId);
   _facePreviewTimerId = setInterval(async () => {
-    if (state.scanningActive) return;
+    if (state.scanningActive) return; // handed off to full recognition
     if (state.currentCameraMode !== "attendance" || !dom.attendanceVideo.srcObject) return;
     try {
       const _faceapi = typeof faceapi !== "undefined" ? faceapi : window.faceapi;
@@ -1071,35 +1009,34 @@ async function beginFacePreviewLoop() {
           new _faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
         .withFaceLandmarks();
       clearOverlayCanvas();
-      const camBox    = document.getElementById("attendance-camera-box");
-      const nameStrip = document.getElementById("scan-name-strip");
       if (detections && detections.length > 0) {
         drawFaceBoxes(detections);
+        const nameStrip = document.getElementById("scan-name-strip");
         if (nameStrip) {
           nameStrip.textContent = "👤 Face detected — press Scan Now";
           nameStrip.style.background = "rgba(14,165,233,0.5)";
         }
-        if (camBox) {
-          camBox.style.borderColor = "rgba(14,165,233,0.8)";
-          camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(14,165,233,0.6),0 0 100px rgba(14,165,233,0.3)";
-        }
       } else {
-        if (nameStrip) { nameStrip.textContent = ""; nameStrip.style.background = "transparent"; }
-        if (camBox) {
-          camBox.style.borderColor = "rgba(255,255,255,0.9)";
-          camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25),0 0 140px rgba(255,255,255,0.1)";
+        const nameStrip = document.getElementById("scan-name-strip");
+        if (nameStrip) {
+          nameStrip.textContent = "";
+          nameStrip.style.background = "transparent";
         }
       }
     } catch (_) {}
   }, 500);
 }
 
+// ─── Freeze a video frame onto an overlay canvas ─────────────
 function freezeVideoFrame(videoEl) {
+  // Use a dedicated full-size freeze canvas layered over the video
   let fc = document.getElementById("freeze-frame-canvas");
   if (!fc) {
     fc = document.createElement("canvas");
     fc.id = "freeze-frame-canvas";
-    fc.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;z-index:5;";
+    fc.style.cssText =
+      "position:absolute;top:0;left:0;width:100%;height:100%;" +
+      "object-fit:cover;border-radius:inherit;z-index:5;";
     const box = document.getElementById("attendance-camera-box");
     if (box) box.appendChild(fc);
   }
@@ -1115,6 +1052,7 @@ function unfreezeVideoFrame() {
   if (fc) fc.style.display = "none";
 }
 
+// ─── Single-shot recognition on frozen frame ─────────────────
 async function runFrozenFrameRecognition(frozenCanvas) {
   state.scanningActive          = true;
   state._unknownFaceFirstSeenAt = null;
@@ -1122,8 +1060,12 @@ async function runFrozenFrameRecognition(frozenCanvas) {
 
   try {
     const _faceapi = typeof faceapi !== "undefined" ? faceapi : window.faceapi;
+    // Run detection on the frozen canvas (not the live video)
     const detections = await _faceapi
-      .detectAllFaces(frozenCanvas, new _faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
+      .detectAllFaces(
+        frozenCanvas,
+        new _faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }),
+      )
       .withFaceLandmarks()
       .withFaceDescriptors();
 
@@ -1136,12 +1078,17 @@ async function runFrozenFrameRecognition(frozenCanvas) {
       return;
     }
 
+    // Use the largest / primary face
     const faces = detections
       .slice(0, LIVE_MULTI_FACE_MAX)
-      .sort((a, b) => b.detection.box.width * b.detection.box.height - a.detection.box.width * a.detection.box.height);
+      .sort((a, b) =>
+        b.detection.box.width * b.detection.box.height -
+        a.detection.box.width * a.detection.box.height
+      );
     const primaryFace  = faces[0];
     const detScore     = primaryFace.detection.score ?? 0.8;
-    const dynThreshold = Number(state.settings.matchThreshold) + (detScore < 0.7 ? LIVE_DYNAMIC_THRESHOLD_BOOST : 0);
+    const dynThreshold = Number(state.settings.matchThreshold) +
+      (detScore < 0.7 ? LIVE_DYNAMIC_THRESHOLD_BOOST : 0);
     const descriptor   = Array.from(primaryFace.descriptor);
     const matches      = rankStudentsByMultiEmbedding(descriptor, dynThreshold).slice(0, 5);
 
@@ -1158,39 +1105,45 @@ async function runFrozenFrameRecognition(frozenCanvas) {
     const confidentMatch = isSelectableMatch(bestMatch, dynThreshold);
 
     if (!confidentMatch) {
+      // ── Unidentified face ─────────────────────────────────
       playSound("unknown");
       dom.attendanceStatus.textContent =
         "Unregistered or unclear face. Closest: " +
         (bestMatch.student?.name || "unknown") +
         ` (${Math.round(distanceToPercent(bestMatch.distance))}% match)`;
+      // Save unidentified entry
       const capturedAt   = new Date().toISOString();
       const imageDataUrl = frozenCanvas.toDataURL("image/jpeg", 0.85);
-      saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch.student?.name || "");
+      saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch?.student?.name || "");
       unfreezeVideoFrame();
       state.scanningActive = false;
       setTimeout(resetToScanReady, 1200);
       return;
     }
 
+    // ── Minimum % guard ──────────────────────────────────────────
     const minPct = Number(state.settings.minMatchPercent ?? 40);
-    const matchPctCheck = bestMatch.distance !== null ? Math.round(distanceToPercent(bestMatch.distance)) : 0;
+    const matchPctCheck = bestMatch.distance !== null
+      ? Math.round(distanceToPercent(bestMatch.distance)) : 0;
     if (matchPctCheck < minPct) {
       playSound("unknown");
       dom.attendanceStatus.textContent =
         `Match too low (${matchPctCheck}% < ${minPct}% min). Closest: ${bestMatch.student?.name || "unknown"}`;
       const capturedAt   = new Date().toISOString();
       const imageDataUrl = frozenCanvas.toDataURL("image/jpeg", 0.85);
-      saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch.student?.name || "");
+      saveUnidentifiedEntry(imageDataUrl, capturedAt, bestMatch?.student?.name || "");
       unfreezeVideoFrame();
       state.scanningActive = false;
       setTimeout(resetToScanReady, 1200);
       return;
     }
 
+    // ── Confident match → auto-save ───────────────────────────
     const now      = new Date();
     const dateKey  = getLocalDateKey(now);
     const matchInfo = matches.find(m => m.student.id === bestMatch.student.id) || bestMatch;
-    const matchPct  = matchInfo.distance !== null ? Math.round(distanceToPercent(matchInfo.distance)) : null;
+    const matchPct  = matchInfo.distance !== null
+      ? Math.round(distanceToPercent(matchInfo.distance)) : null;
 
     const record = {
       id:           `ATT-${Date.now()}`,
@@ -1200,13 +1153,15 @@ async function runFrozenFrameRecognition(frozenCanvas) {
       class:        bestMatch.student.class,
       studentPhone: bestMatch.student.studentPhone,
       parentPhone:  bestMatch.student.parentPhone,
-      dateKey, date: dateKey,
+      dateKey,
+      date:         dateKey,
       timestamp:    now.toISOString(),
       dateLabel:    formatDate(now),
       timeLabel:    formatTime(now),
       formattedTime:formatDateTime(now),
       scanPhoto:    "",
-      matchDistance: matchInfo.distance != null && isFinite(matchInfo.distance) ? Number(matchInfo.distance.toFixed(4)) : null,
+      matchDistance: matchInfo.distance != null && isFinite(matchInfo.distance)
+        ? Number(matchInfo.distance.toFixed(4)) : null,
       matchPercent:  matchPct,
       syncState:    "local-only",
       waSent:       false,
@@ -1217,14 +1172,17 @@ async function runFrozenFrameRecognition(frozenCanvas) {
     autoSendSms(record);
     playSound("match");
 
+    // Show name strip on frozen frame immediately
     const nameStrip = document.getElementById("scan-name-strip");
     if (nameStrip) {
       nameStrip.textContent = `✅ ${record.name}`;
       nameStrip.style.background = "linear-gradient(90deg,#059669,#0ea5e9)";
     }
 
+    // Show toast, then unfreeze and reset
     showQuickToast(record);
 
+    // Reset state
     state.attendancePhoto             = null;
     state.selectedAttendanceStudentId = null;
     state._pendingAttendanceRecord    = null;
@@ -1248,15 +1206,21 @@ async function runFrozenFrameRecognition(frozenCanvas) {
   }
 }
 
+// Called when user presses "Scan Now" green button
 async function activateScan() {
   if (state.currentCameraMode !== "attendance" || !dom.attendanceVideo.srcObject) {
     dom.attendanceStatus.textContent = "Camera not ready. Please wait.";
     return;
   }
+  // Stop preview loop
   if (_facePreviewTimerId) { clearInterval(_facePreviewTimerId); _facePreviewTimerId = null; }
   hideScanNowButton();
+
+  // ── Freeze the frame instantly on button press ───────────────
   const frozenCanvas = freezeVideoFrame(dom.attendanceVideo);
   dom.attendanceStatus.textContent = "Identifying…";
+
+  // ── Run recognition on the frozen frame (single shot) ────────
   await runFrozenFrameRecognition(frozenCanvas);
 }
 
@@ -1269,7 +1233,9 @@ function showScanNowButton() {
     btn.id        = "scan-now-btn";
     btn.type      = "button";
     btn.innerHTML = "🔍 Scan Now";
-    btn.className = "flex-1 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white py-4 rounded-3xl text-xl font-bold flex items-center justify-center gap-x-2 transition-all w-full";
+    btn.className =
+      "flex-1 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white py-4 " +
+      "rounded-3xl text-xl font-bold flex items-center justify-center gap-x-2 transition-all w-full";
     btn.onclick = activateScan;
     dom.captureAttendanceButton.parentElement.appendChild(btn);
   }
@@ -1282,24 +1248,25 @@ function hideScanNowButton() {
 }
 
 function resetToScanReady() {
+  // After a scan (success or fail), go back to "Scan Now" state
   state.scanningActive = false;
-  if (state.liveRecognitionTimerId) { clearInterval(state.liveRecognitionTimerId); state.liveRecognitionTimerId = null; }
+  if (state.liveRecognitionTimerId) {
+    clearInterval(state.liveRecognitionTimerId);
+    state.liveRecognitionTimerId = null;
+  }
   unfreezeVideoFrame();
   resetLiveRecognitionSelection();
   showScanNowButton();
   clearOverlayCanvas();
   const nameStrip = document.getElementById("scan-name-strip");
   if (nameStrip) { nameStrip.textContent = ""; nameStrip.style.background = "transparent"; }
-  const camBox = document.getElementById("attendance-camera-box");
-  if (camBox) {
-    camBox.style.borderColor = "rgba(255,255,255,0.9)";
-    camBox.style.boxShadow = "0 0 0 4px rgba(255,255,255,0.2),0 0 60px rgba(255,255,255,0.55),0 0 100px rgba(255,255,255,0.25),0 0 140px rgba(255,255,255,0.1)";
-  }
   dom.attendanceStatus.textContent = "Ready. Press 'Scan Now' for next student.";
   dom.recognitionTitle.textContent = "Ready";
   dom.recognitionCopy.textContent  = "Press Scan Now to identify a student.";
   beginFacePreviewLoop();
 }
+
+
 
 function syncAttendanceControls(cameraStarted) {
   // Only toggle Start Camera ↔ Confirm buttons
@@ -1495,7 +1462,7 @@ async function runLiveRecognition() {
 }
 
 function rankStudentsByMultiEmbedding(descriptor, dynThreshold) {
-  // Use full individual embeddings only — most accurate
+  const threshold = dynThreshold ?? Number(state.settings.matchThreshold);
   const withDescriptors = state.students.filter(s =>
     Array.isArray(s.descriptors) && s.descriptors.length > 0
   );
@@ -1513,11 +1480,9 @@ function rankStudentsByMultiEmbedding(descriptor, dynThreshold) {
       distance: descriptorDistance(descriptor, student.descriptor),
     })),
   ].sort((a, b) => a.distance - b.distance);
-
   const noDescriptor = state.students
     .filter(s => !Array.isArray(s.descriptors) && !Array.isArray(s.descriptor))
     .map(s => ({ student: s, distance: null }));
-
   return [...ranked, ...noDescriptor];
 }
 
@@ -2003,10 +1968,7 @@ function sendWhatsAppToAll() {
 // ─── SMS Gateway Multi-Device Settings ───────────────────────
 // Each slot: { url, user, pass, label }
 function getSmsSlots() {
-  // Use hardcoded devices if defined in config
-  if (HARDCODED_SMS_DEVICES && HARDCODED_SMS_DEVICES.length > 0) {
-    return HARDCODED_SMS_DEVICES;
-  }
+  if (HARDCODED_SMS_DEVICES && HARDCODED_SMS_DEVICES.length > 0) return HARDCODED_SMS_DEVICES;
   return JSON.parse(localStorage.getItem('sms-gateway-slots') || '[]');
 }
 function saveSmsSlots(slots) {
@@ -2042,25 +2004,23 @@ function updateSmsSlot(idx, field, value) {
 
 function renderSmsSlots() {
   const container = document.getElementById('sms-gateway-slots');
-  const panel     = document.getElementById('sms-gateway-panel');
   if (!container) return;
 
-  // If hardcoded devices exist — hide manual UI, show info message
+  // Hardcoded devices — show info only
   if (HARDCODED_SMS_DEVICES && HARDCODED_SMS_DEVICES.length > 0) {
     container.innerHTML = `
       <div class="bg-sky-500/10 border border-sky-500/30 rounded-2xl p-4 text-sm text-sky-300">
         ✅ <strong>${HARDCODED_SMS_DEVICES.length} device(s)</strong> configured in code:<br>
         <ul class="mt-2 space-y-1 text-slate-300">
-          ${HARDCODED_SMS_DEVICES.map((d, i) => `<li>📱 ${d.label || 'Device ' + (i+1)}</li>`).join('')}
+          ${HARDCODED_SMS_DEVICES.map((d, i) => `<li>📱 ${d.label || 'Device ' + (i+1)}: ${getSmsCountTodayForSlot(i)} SMS today</li>`).join('')}
         </ul>
         <p class="mt-2 text-xs text-slate-400">To change devices, edit HARDCODED_SMS_DEVICES in app.js on GitHub.</p>
-      </div>
-    `;
-    // Hide add device button
+      </div>`;
     const addBtn = document.getElementById('add-sms-slot-btn');
     if (addBtn) addBtn.style.display = 'none';
     return;
   }
+
   const slots = getSmsSlots();
   if (slots.length === 0) {
     container.innerHTML = '<p class="text-slate-500 text-sm text-center py-2">No devices added. Click "+ Add Device" to add one.</p>';
@@ -2078,7 +2038,7 @@ function renderSmsSlots() {
           '<button onclick="removeSmsSlot(' + i + ')" class="text-red-400 text-xs hover:text-red-300">✕</button>' +
         '</div>' +
       '</div>' +
-      '<input type="text" value="' + escapeHtml(s.url) + '" oninput="updateSmsSlot(' + i + ',\'url\',this.value)" placeholder="https://your-worker.workers.dev" class="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-xs outline-none text-slate-200">' +
+      '<input type="text" value="' + escapeHtml(s.url) + '" oninput="updateSmsSlot(' + i + ',\'url\',this.value)" placeholder="http://device-ip:port" class="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-xs outline-none text-slate-200">' +
       '<div class="grid grid-cols-2 gap-2">' +
         '<input type="text" value="' + escapeHtml(s.user) + '" oninput="updateSmsSlot(' + i + ',\'user\',this.value)" placeholder="Username" class="bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-xs outline-none text-slate-200">' +
         '<input type="password" value="' + escapeHtml(s.pass) + '" oninput="updateSmsSlot(' + i + ',\'pass\',this.value)" placeholder="Password" class="bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-xs outline-none text-slate-200">' +
@@ -2089,7 +2049,6 @@ function renderSmsSlots() {
       '</div>' +
     '</div>';
   }).join('');
-  // Update total limit display
   const totalEl = document.getElementById('sms-total-limit');
   if (totalEl) totalEl.textContent = slots.length * SMS_DAILY_LIMIT;
 }
@@ -2118,21 +2077,43 @@ async function testSmsGatewaySlot(idx) {
   }
 }
 
-// ─── SMS Count via Google Sheet ───────────────────────────────
-let _smsCountCache = {}; // { slotIndex: count } for today
-let _smsCountDate  = ""; // today's date when cache was loaded
+// ─── SMS Count — Google Sheet based ──────────────────────────
+let _smsCountCache = {};
+let _smsCountDate  = "";
 
 function getSmsCountTodayForSlot(slotIdx) {
   const today = getLocalDateKey(new Date());
   if (_smsCountDate && _smsCountDate !== today) _smsCountCache = {};
+  // Fallback to localStorage if Sheet not loaded yet
+  if (!_smsCountDate) {
+    return parseInt(localStorage.getItem('sms-count-' + today + '-slot' + slotIdx) || '0');
+  }
   return _smsCountCache[slotIdx] || 0;
+}
+
+async function incrementSmsCountForSlot(slotIdx) {
+  const slots = getSmsSlots();
+  const label = slots[slotIdx]?.label || `Device ${slotIdx + 1}`;
+  const today = getLocalDateKey(new Date());
+  // Update local cache
+  _smsCountCache[slotIdx] = (_smsCountCache[slotIdx] || 0) + 1;
+  _smsCountDate = today;
+  // Also update localStorage as backup
+  const key = 'sms-count-' + today + '-slot' + slotIdx;
+  localStorage.setItem(key, _smsCountCache[slotIdx]);
+  // Update Google Sheet in background
+  try {
+    const url = state.settings.sheetsUrl;
+    if (!url) return;
+    await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "updateSmsCount", slotIndex: slotIdx, label, increment: 1 }))}`);
+  } catch(e) { console.warn("SMS count Sheet update failed:", e); }
 }
 
 async function loadSmsCountFromSheet() {
   try {
     const url = state.settings.sheetsUrl;
     if (!url) return;
-    const res = await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "getSmsCount" }))}`);
+    const res  = await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "getSmsCount" }))}`);
     const data = await res.json();
     if (data.ok && Array.isArray(data.counts)) {
       _smsCountCache = {};
@@ -2140,31 +2121,6 @@ async function loadSmsCountFromSheet() {
       data.counts.forEach(c => { _smsCountCache[c.slotIndex] = c.count; });
     }
   } catch(e) { console.warn("SMS count load failed:", e); }
-}
-
-async function incrementSmsCountForSlot(slotIdx) {
-  const slots = getSmsSlots();
-  const label = slots[slotIdx]?.label || `Device ${slotIdx + 1}`;
-  // Update local cache immediately
-  _smsCountCache[slotIdx] = (_smsCountCache[slotIdx] || 0) + 1;
-  // Update Google Sheet in background
-  try {
-    const url = state.settings.sheetsUrl;
-    if (!url) return;
-    await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({
-      action: "updateSmsCount",
-      slotIndex: slotIdx,
-      label,
-      increment: 1,
-    }))}`);
-  } catch(e) { console.warn("SMS count update failed:", e); }
-}
-
-function getSmsCountToday() {
-  const slots = getSmsSlots();
-  let total = 0;
-  for (let i = 0; i < slots.length; i++) total += getSmsCountTodayForSlot(i);
-  return total;
 }
 
 function getActiveSlot() {
@@ -2175,10 +2131,6 @@ function getActiveSlot() {
   return null;
 }
 
-function incrementSmsCount() {
-  // Handled per-slot in autoSendSms
-}
-
 function loadSmsGatewayUrl() {
   const legacyUrl  = localStorage.getItem('sms-gateway-url')  || '';
   const legacyUser = localStorage.getItem('sms-gateway-user') || '';
@@ -2187,7 +2139,6 @@ function loadSmsGatewayUrl() {
     saveSmsSlots([{ url: legacyUrl, user: legacyUser, pass: legacyPass, label: 'Device 1' }]);
     localStorage.removeItem('sms-gateway-url');
   }
-  // Load SMS count from Google Sheet then render
   loadSmsCountFromSheet().then(() => {
     renderSmsSlots();
     updateSmsUsageDisplay();
@@ -2202,6 +2153,17 @@ function updateSmsUsageDisplay() {
 
 // ─── SMS / WhatsApp Split Panel ───────────────────────────────
 const SMS_DAILY_LIMIT = 100;
+
+function getSmsCountToday() {
+  const slots = getSmsSlots();
+  let total = 0;
+  for (let i = 0; i < slots.length; i++) total += getSmsCountTodayForSlot(i);
+  return total;
+}
+
+function incrementSmsCount() {
+  // Increment is now handled per-slot in autoSendSms
+}
 
 function showSmsSplitPanel() {
   const today = getLocalDateKey(new Date());
@@ -2282,38 +2244,29 @@ async function autoSendSms(record) {
 
   const msg = 'Dear Parent, ' + record.name + ' has marked attendance today at ' + record.formattedTime + '. - ' + (state.settings.instituteName || 'Institute');
 
-  // Try slots starting from active slot, fail-based switching for recharge issues
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     if (!slot.url) continue;
-    // Skip if slot already at daily limit
     if (getSmsCountTodayForSlot(i) >= SMS_DAILY_LIMIT) continue;
-
     const baseUrl = slot.url.trim().replace(/\/$/, '');
     try {
       const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Basic ' + btoa((slot.user || '') + ':' + (slot.pass || '')),
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa((slot.user||'') + ':' + (slot.pass||'')) },
         body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
         signal: AbortSignal.timeout(8000),
       });
       if (resp.ok || resp.status === 202) {
-        // Success — update count in Sheet
         await incrementSmsCountForSlot(i);
         updateSmsUsageDisplay();
         markWaSent(record.id);
-        console.log('Auto SMS sent via Device ' + (i + 1) + ' to', record.name);
-        return; // done
+        console.log('Auto SMS sent via Device ' + (i+1) + ' to', record.name);
+        return;
       } else {
-        console.warn('Device ' + (i + 1) + ' failed (status ' + resp.status + ') — trying next slot');
-        // Fall through to next slot (fail-based switching)
+        console.warn('Device ' + (i+1) + ' failed (' + resp.status + ') — trying next');
       }
     } catch(e) {
-      console.warn('Device ' + (i + 1) + ' error:', e.message, '— trying next slot');
-      // Fall through to next slot
+      console.warn('Device ' + (i+1) + ' error:', e.message, '— trying next');
     }
   }
   console.error('All SMS slots failed for', record.name);
@@ -2363,17 +2316,6 @@ function sendWaFromSplit(recordId, btn) {
 }
 
 // ─── Records UI ───────────────────────────────────────────────
-async function refreshFromSheet() {
-  if (typeof loadFromSheets !== "function") return;
-  try {
-    await loadFromSheets();
-    if (!dom.studentsListView?.classList.contains("hidden")) renderStudentsGrid();
-    else renderAttendanceTable();
-  } catch(e) {
-    console.warn("Refresh failed:", e);
-  }
-}
-
 function showStudentsList() {
   dom.studentsListView.classList.remove("hidden");
   dom.attendanceListView.classList.add("hidden");
@@ -2385,7 +2327,6 @@ function showStudentsList() {
   document.getElementById("export-pdf-btn")?.classList.add("hidden");
   document.getElementById("wa-all-btn")?.classList.add("hidden");
   document.getElementById("sms-split-btn")?.classList.add("hidden");
-  // Clear search on tab switch
   const searchEl = document.getElementById("student-search-input");
   if (searchEl) searchEl.value = "";
   renderStudentsGrid();
@@ -2393,6 +2334,15 @@ function showStudentsList() {
 
 function filterStudentsGrid(query) {
   renderStudentsGrid(query);
+}
+
+async function refreshFromSheet() {
+  if (typeof loadFromSheets !== "function") return;
+  try {
+    await loadFromSheets();
+    if (!dom.studentsListView?.classList.contains("hidden")) renderStudentsGrid();
+    else renderAttendanceTable();
+  } catch(e) { console.warn("Refresh failed:", e); }
 }
 
 function renderStudentsGrid(searchQuery) {
@@ -2417,7 +2367,7 @@ function renderStudentsGrid(searchQuery) {
   }
   if (noResults) noResults.classList.add("hidden");
 
-  // Chunked rendering — render 20 at a time to keep UI responsive
+  // Chunked rendering — 20 at a time
   const CHUNK = 20;
   let idx = 0;
   function renderChunk() {
@@ -2430,10 +2380,8 @@ function renderStudentsGrid(searchQuery) {
       const embBadge = student.embeddingCount
         ? `<div class="text-xs text-sky-400 mt-1">🧠 ${student.embeddingCount} face samples</div>` : "";
       const angleInfo = student.angleData
-        ? Object.entries(student.angleData)
-            .filter(([, v]) => v)
-            .map(([k]) => `<span class="inline-block bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded-lg">${k}</span>`)
-            .join("")
+        ? Object.entries(student.angleData).filter(([, v]) => v)
+            .map(([k]) => `<span class="inline-block bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded-lg">${k}</span>`).join("")
         : "";
       card.innerHTML = `
         <img src="${escapeHtml(student.facePhoto||"")}"
@@ -2453,16 +2401,11 @@ function renderStudentsGrid(searchQuery) {
         <div class="flex gap-2 mt-4">
           <button type="button"
             class="flex-1 text-xs bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 px-3 py-2 rounded-2xl font-medium transition-colors"
-            onclick="openEditModal('${escapeHtml(student.id)}')">
-            ✏️ Edit
-          </button>
+            onclick="openEditModal('${escapeHtml(student.id)}')">✏️ Edit</button>
           <button type="button"
             class="flex-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-2 rounded-2xl font-medium transition-colors"
-            onclick="deleteStudent('${escapeHtml(student.id)}')">
-            🗑️ Delete
-          </button>
-        </div>
-      `;
+            onclick="deleteStudent('${escapeHtml(student.id)}')">🗑️ Delete</button>
+        </div>`;
       frag.appendChild(card);
     }
     dom.studentsGrid.appendChild(frag);
@@ -2471,7 +2414,7 @@ function renderStudentsGrid(searchQuery) {
   requestAnimationFrame(renderChunk);
 }
 
-async function showAttendanceList() {
+function showAttendanceList() {
   dom.studentsListView.classList.add("hidden");
   dom.attendanceListView.classList.remove("hidden");
   dom.showAttendanceButton.classList.add("bg-sky-500", "text-white");
@@ -2541,69 +2484,63 @@ function renderAttendanceTable() {
     return;
   }
 
-  // Chunked rendering — render 30 rows at a time
-  const CHUNK = 30;
-  let idx = 0;
-  function renderChunk() {
-    const end = Math.min(idx + CHUNK, records.length);
-    const frag = document.createDocumentFragment();
-    for (; idx < end; idx++) {
-      const record = records[idx];
-      const row = document.createElement("tr");
-      row.className = "border-b border-slate-700 last:border-none hover:bg-slate-800/50";
-      const matchLabel = record.matchPercent !== null && record.matchPercent !== undefined
-        ? `${record.matchPercent}%` : "";
-      const waStatus = record.waSent
-        ? `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`
-        : `<span class="text-slate-500 text-xs">Not sent</span>`;
-      const profileBadge = record.profileStatus === "deleted"
-        ? `<span class="ml-1 text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-lg">Deleted Profile</span>`
-        : `<span class="ml-1 text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-lg">Active</span>`;
-      row.innerHTML = `
-        <td class="px-4 py-4 text-xs">${escapeHtml(record.formattedTime)}</td>
-        <td class="px-4 py-4 font-medium">${escapeHtml(record.name)}${matchLabel ? `<span class="ml-2 text-xs text-emerald-400">${matchLabel}</span>` : ""}</td>
-        <td class="px-4 py-4 text-sm">${escapeHtml(record.roll)}</td>
-        <td class="px-4 py-4 text-sm">${escapeHtml(record.class)}</td>
-        <td class="px-4 py-4">${profileBadge}</td>
-        <td class="px-4 py-4 text-center">${waStatus}</td>
-        <td class="px-4 py-4 text-right">
-          <div class="flex gap-2 justify-end">
-            <button type="button"
-              class="attendance-wa-btn text-emerald-400 text-xs font-medium px-3 py-2 bg-emerald-400/10 hover:bg-emerald-400/20 rounded-2xl"
-              data-record-id="${escapeHtml(record.id)}">
-              📤 WA
-            </button>
-            <button type="button"
-              class="attendance-del-btn text-red-400 text-xs font-medium px-3 py-2 bg-red-400/10 hover:bg-red-400/20 rounded-2xl"
-              data-record-id="${escapeHtml(record.id)}">
-              🗑️
-            </button>
-          </div>
-        </td>
-      `;
-      row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
-        const rec = state.attendances.find(e => e.id === record.id);
-        if (rec) {
-          openWhatsappForRecord(rec);
-          markWaSent(rec.id);
-          const statusCell = row.querySelectorAll("td")[5];
-          if (statusCell) statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
-          this.textContent = '✅ Sent';
-          this.style.background = 'rgba(16,185,129,0.2)';
-          this.style.color = '#10b981';
-          this.disabled = true;
-          this.style.cursor = 'default';
+  records.forEach(record => {
+    const row = document.createElement("tr");
+    row.className = "border-b border-slate-700 last:border-none hover:bg-slate-800/50";
+    const matchLabel = record.matchPercent !== null && record.matchPercent !== undefined
+      ? `${record.matchPercent}%` : "";
+    // FIX #4: WhatsApp sent status column
+    const waStatus = record.waSent
+      ? `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`
+      : `<span class="text-slate-500 text-xs">Not sent</span>`;
+    const profileBadge = record.profileStatus === "deleted"
+      ? `<span class="ml-1 text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-lg">Deleted Profile</span>`
+      : `<span class="ml-1 text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-lg">Active</span>`;
+    row.innerHTML = `
+      <td class="px-4 py-4 text-xs">${escapeHtml(record.formattedTime)}</td>
+      <td class="px-4 py-4 font-medium">${escapeHtml(record.name)}${matchLabel ? `<span class="ml-2 text-xs text-emerald-400">${matchLabel}</span>` : ""}</td>
+      <td class="px-4 py-4 text-sm">${escapeHtml(record.roll)}</td>
+      <td class="px-4 py-4 text-sm">${escapeHtml(record.class)}</td>
+      <td class="px-4 py-4">${profileBadge}</td>
+      <td class="px-4 py-4 text-center">${waStatus}</td>
+      <td class="px-4 py-4 text-right">
+        <div class="flex gap-2 justify-end">
+          <button type="button"
+            class="attendance-wa-btn text-emerald-400 text-xs font-medium px-3 py-2 bg-emerald-400/10 hover:bg-emerald-400/20 rounded-2xl"
+            data-record-id="${escapeHtml(record.id)}">
+            📤 WA
+          </button>
+          <button type="button"
+            class="attendance-del-btn text-red-400 text-xs font-medium px-3 py-2 bg-red-400/10 hover:bg-red-400/20 rounded-2xl"
+            data-record-id="${escapeHtml(record.id)}">
+            🗑️
+          </button>
+        </div>
+      </td>
+    `;
+    row.querySelector(".attendance-wa-btn")?.addEventListener("click", function() {
+      const rec = state.attendances.find(e => e.id === record.id);
+      if (rec) {
+        openWhatsappForRecord(rec);
+        markWaSent(rec.id);
+        // Immediately update status cell
+        const statusCell = row.querySelectorAll("td")[5];
+        if (statusCell) {
+          statusCell.innerHTML = `<span class="text-emerald-400 text-xs font-semibold">✅ Sent</span>`;
         }
-      });
-      row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
-        deleteAttendanceRecord(record.id);
-      });
-      frag.appendChild(row);
-    }
-    dom.attendanceTableBody.appendChild(frag);
-    if (idx < records.length) requestAnimationFrame(renderChunk);
-  }
-  requestAnimationFrame(renderChunk);
+        // Immediately update the button itself to show sent
+        this.textContent = '✅ Sent';
+        this.style.background = 'rgba(16,185,129,0.2)';
+        this.style.color = '#10b981';
+        this.disabled = true;
+        this.style.cursor = 'default';
+      }
+    });
+    row.querySelector(".attendance-del-btn")?.addEventListener("click", () => {
+      deleteAttendanceRecord(record.id);
+    });
+    dom.attendanceTableBody.appendChild(row);
+  });
 }
 
 // ─── TRASH / RECYCLE BIN ──────────────────────────────────────
@@ -2681,7 +2618,7 @@ function saveUnidentifiedEntry(imageDataUrl, capturedAt, closestName) {
   const uid = `UNK-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
   const entry = {
     id:            uid,
-    image:         "", // never save image — no storage waste
+    image:         "",
     closestName:   closestName || "",
     capturedAt:    capturedAt,
     dateKey:       getLocalDateKey(new Date(capturedAt)),
@@ -2694,17 +2631,9 @@ function saveUnidentifiedEntry(imageDataUrl, capturedAt, closestName) {
   if (state.unidentified.length > 200) state.unidentified = state.unidentified.slice(0, 200);
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
-
-  // ── Play captured sound ──
   playSound("captured");
-
-  // ── Show Not Identified popup (red theme) ──
   showUnidentifiedCapturedPopup(entry);
-
-  // No auto-download, no image stored anywhere
-
-  dom.attendanceStatus.textContent =
-    `⚠️ Unknown face captured (${uid}). Saved to Unidentified tab.`;
+  dom.attendanceStatus.textContent = `⚠️ Unknown face captured (${uid}). Saved to Unidentified tab.`;
 }
 
 function showUnidentifiedCapturedPopup(entry) {
@@ -2717,74 +2646,22 @@ function showUnidentifiedCapturedPopup(entry) {
       "justify-content:center;background:rgba(0,0,0,0.80);backdrop-filter:blur(6px);";
     document.documentElement.appendChild(popup);
   }
-
   popup.innerHTML = `
-    <div style="
-      background:#0f172a;
-      border:2px solid #ef4444;
-      border-radius:28px;
-      padding:28px 24px 24px;
-      max-width:320px;
-      width:90%;
-      text-align:center;
-      box-shadow:0 0 0 4px rgba(239,68,68,0.15), 0 25px 60px rgba(0,0,0,0.6);
-      animation:modalPop 0.25s ease-out;
-    ">
-      <!-- Red cross icon -->
-      <div style="
-        width:90px;height:90px;border-radius:50%;
-        border:3px solid #ef4444;background:#1e293b;
-        display:flex;align-items:center;justify-content:center;
-        margin:0 auto 16px;font-size:44px;line-height:1;
-      ">❌</div>
-
-      <!-- Not Identified heading -->
-      <div style="font-size:26px;font-weight:800;color:#ef4444;letter-spacing:-0.5px;margin-bottom:4px;">
-        Not Identified
-      </div>
-      <div style="font-size:13px;color:#94a3b8;margin-bottom:14px;">
-        Face not recognised — entry saved
-      </div>
-
-      <!-- UID chip -->
-      <div style="
-        background:#1e293b;border:1px solid #334155;
-        border-radius:12px;padding:8px 14px;
-        font-family:monospace;font-size:12px;color:#ef4444;
-        word-break:break-all;margin-bottom:8px;
-      ">${escapeHtml(entry.id)}</div>
-
-      <!-- Time -->
-      <div style="font-size:12px;color:#64748b;margin-bottom:20px;">
-        🕐 ${escapeHtml(entry.formattedTime)}
-      </div>
-
-      <div style="font-size:12px;color:#475569;margin-bottom:20px;">
-        Go to <strong style="color:#ef4444;">Unidentified</strong> tab to manually mark attendance.
-      </div>
-
-      <!-- Close button -->
-      <button
-        onclick="document.getElementById('unk-captured-popup').style.display='none';"
-        style="
-          width:100%;padding:14px;border-radius:16px;border:none;cursor:pointer;
-          background:linear-gradient(90deg,#ef4444,#dc2626);
-          color:#fff;font-size:16px;font-weight:700;
-          transition:opacity 0.15s;
-        "
-        onmouseover="this.style.opacity='0.85'"
-        onmouseout="this.style.opacity='1'"
-      >
+    <div style="background:#0f172a;border:2px solid #ef4444;border-radius:28px;padding:28px 24px 24px;max-width:320px;width:90%;text-align:center;box-shadow:0 0 0 4px rgba(239,68,68,0.15),0 25px 60px rgba(0,0,0,0.6);animation:modalPop 0.25s ease-out;">
+      <div style="width:90px;height:90px;border-radius:50%;border:3px solid #ef4444;background:#1e293b;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:44px;line-height:1;">❌</div>
+      <div style="font-size:26px;font-weight:800;color:#ef4444;letter-spacing:-0.5px;margin-bottom:4px;">Not Identified</div>
+      <div style="font-size:13px;color:#94a3b8;margin-bottom:14px;">Face not recognised — entry saved</div>
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:8px 14px;font-family:monospace;font-size:12px;color:#ef4444;word-break:break-all;margin-bottom:8px;">${escapeHtml(entry.id)}</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:20px;">🕐 ${escapeHtml(entry.formattedTime)}</div>
+      <div style="font-size:12px;color:#475569;margin-bottom:20px;">Go to <strong style="color:#ef4444;">Unidentified</strong> tab to manually mark attendance.</div>
+      <button onclick="document.getElementById('unk-captured-popup').style.display='none';"
+        style="width:100%;padding:14px;border-radius:16px;border:none;cursor:pointer;background:linear-gradient(90deg,#ef4444,#dc2626);color:#fff;font-size:16px;font-weight:700;">
         ✅ OK, Got It
       </button>
     </div>
   `;
   popup.style.display = "flex";
-
-  // Auto-close after 6 seconds
-  setTimeout(() => {
-    if (popup.style.display !== "none") popup.style.display = "none";
-  }, 6000);
+  setTimeout(() => { if (popup.style.display !== "none") popup.style.display = "none"; }, 6000);
 }
 
 function updateUnidentifiedBadge() {
@@ -2806,18 +2683,9 @@ function renderUnidentifiedList() {
   const container = document.getElementById("unidentified-list");
   if (!container) return;
   container.innerHTML = "";
-
   const query = (document.getElementById("unidentified-search-input")?.value || "").trim().toLowerCase();
   let items = state.unidentified;
-
-  // Filter by closest match name if search is active
-  if (query) {
-    items = items.filter(e =>
-      (e.closestName || "").toLowerCase().includes(query) ||
-      (e.id || "").toLowerCase().includes(query)
-    );
-  }
-
+  if (query) items = items.filter(e => (e.closestName||"").toLowerCase().includes(query) || (e.id||"").toLowerCase().includes(query));
   if (!items.length) {
     container.innerHTML = query
       ? '<div class="text-center py-16 text-slate-400 text-lg">No entries match your search.</div>'
@@ -2890,15 +2758,11 @@ function renderUnidentifiedList() {
           <p class="text-sm text-slate-300 font-semibold mb-3">
             👇 Select the student this face belongs to:
           </p>
-          <!-- Search inside panel -->
           <div class="relative mb-3">
             <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">🔍</span>
-            <input
-              type="text"
-              placeholder="Search student name…"
+            <input type="text" placeholder="Search student name…"
               oninput="filterUnkStudentList('${escapeHtml(entry.id)}', this.value)"
-              class="w-full bg-slate-900 border border-slate-600 focus:border-sky-500 focus:outline-none rounded-xl pl-9 pr-4 py-2 text-sm text-slate-100 placeholder-slate-500"
-            />
+              class="w-full bg-slate-900 border border-slate-600 focus:border-sky-500 focus:outline-none rounded-xl pl-9 pr-4 py-2 text-sm text-slate-100 placeholder-slate-500"/>
           </div>
           <div id="unk-student-list-${escapeHtml(entry.id)}" class="space-y-2 max-h-64 overflow-y-auto pr-1" style="scrollbar-width:thin;">
             ${studentCards.length ? studentCards : '<p class="text-slate-400 text-sm">No students registered yet.</p>'}
@@ -2931,17 +2795,6 @@ function toggleUnkPanel(entryId) {
   if (!panel) return;
   const open = panel.classList.toggle("hidden");
   if (chevron) chevron.style.transform = open ? "" : "rotate(180deg)";
-}
-
-function filterUnkStudentList(entryId, query) {
-  const listEl = document.getElementById(`unk-student-list-${entryId}`);
-  if (!listEl) return;
-  const q = query.trim().toLowerCase();
-  listEl.querySelectorAll(".unk-student-card").forEach(card => {
-    const name = (card.querySelector(".font-semibold")?.textContent || "").toLowerCase();
-    const roll = (card.querySelector(".text-xs")?.textContent || "").toLowerCase();
-    card.style.display = (!q || name.includes(q) || roll.includes(q)) ? "" : "none";
-  });
 }
 
 function selectUnkStudent(entryId, studentId, el) {
@@ -3013,14 +2866,11 @@ function markUnidentifiedAttendance(entryId) {
   }
 
   state.attendances.unshift(record);
-  saveData(true); // immediate save so markWaSent can find the record
+  saveData(true);
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
   renderUnidentifiedList();
-
-  // ── Auto send SMS to parent ────────────────────────────────
   autoSendSms(record);
-
   showUnidentifiedSuccessPopup(record);
 }
 
@@ -3094,17 +2944,15 @@ function startUnidentifiedAutoCleanup() {
   setInterval(() => {
     const fiveMinAgo = Date.now() - 5 * 60 * 1000;
     const before = state.unidentified.length;
-    state.unidentified = state.unidentified.filter(e => {
-      if (e.resolved) return true; // keep resolved entries
-      return new Date(e.capturedAt).getTime() > fiveMinAgo;
-    });
+    state.unidentified = state.unidentified.filter(e =>
+      e.resolved || new Date(e.capturedAt).getTime() > fiveMinAgo
+    );
     if (state.unidentified.length !== before) {
       localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
       updateUnidentifiedBadge();
-      // Re-render only if unidentified tab is active
       if (state.activeSection === "unidentified") renderUnidentifiedList();
     }
-  }, 60 * 1000); // check every 1 minute
+  }, 60 * 1000);
 }
 
 function deleteAllUnidentified() {
@@ -3114,6 +2962,17 @@ function deleteAllUnidentified() {
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
   renderUnidentifiedList();
+}
+
+function filterUnkStudentList(entryId, query) {
+  const listEl = document.getElementById(`unk-student-list-${entryId}`);
+  if (!listEl) return;
+  const q = query.trim().toLowerCase();
+  listEl.querySelectorAll(".unk-student-card").forEach(card => {
+    const name = (card.querySelector(".font-semibold")?.textContent || "").toLowerCase();
+    const roll = (card.querySelector(".text-xs")?.textContent || "").toLowerCase();
+    card.style.display = (!q || name.includes(q) || roll.includes(q)) ? "" : "none";
+  });
 }
 
 function clearResolvedUnidentified() {
@@ -3226,30 +3085,26 @@ async function captureEditAngle() {
   if (!video || !video.srcObject) { alert("Start camera first."); return; }
   const idx = _editAngle.index;
   if (idx >= _editAngleDefs.length) return;
-  const angleDef = _editAngleDefs[idx];
-  const angleKey = angleDef.key;
+  const angleKey = _editAngleDefs[idx].key;
   const status = document.getElementById("edit-register-status");
-  const btn = document.getElementById("edit-capture-angle-btn");
-  if (status) status.textContent = `Scanning ${angleDef.label}… Hold steady.`;
-  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Capturing…";
   try {
-    await ensureModels();
-    // Use same multi-frame capture as main registration
+    const _faceapi = typeof faceapi !== "undefined" ? faceapi : window.faceapi;
     const canvas = document.createElement("canvas");
-    const { descriptors, bestFrameUrl } = await captureAngleVideo(video, canvas, angleDef);
-    if (!descriptors || descriptors.length < 1) {
-      if (status) status.textContent = `No quality frames captured for ${angleDef.label}. Try again.`;
-      if (btn) btn.disabled = false;
-      return;
-    }
-    _editAngle.descriptors[angleKey] = descriptors;
-    _editAngle.angleData[angleKey] = bestFrameUrl || "";
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    const result = await _faceapi
+      .detectSingleFace(canvas, new _faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
+      .withFaceLandmarks().withFaceDescriptor();
+    if (!result) { if (status) status.textContent = "No face detected. Try again."; return; }
+    _editAngle.descriptors[angleKey] = [Array.from(result.descriptor)];
+    _editAngle.angleData[angleKey] = canvas.toDataURL("image/jpeg", 0.8);
     _editAngle.index++;
-    if (status) status.textContent = `✅ ${angleDef.label} captured (${descriptors.length} frames)!`;
+    if (status) status.textContent = `✅ ${angleKey} captured!`;
     updateEditAngleUI();
   } catch (err) {
     if (status) status.textContent = "Error: " + err.message;
-    if (btn) btn.disabled = false;
   }
 }
 
@@ -3317,9 +3172,6 @@ function saveEditStudent() {
     updatedOn: new Date().toISOString(),
     ...faceUpdate,
   };
-  // Recompute averaged descriptor if face was updated
-  computeAndCacheAvgDescriptor(state.students[idx]);
-  saveAvgDescriptors();
   state.attendances = state.attendances.map(a =>
     a.studentId === id
       ? { ...a, name, roll, class: className, studentPhone, parentPhone }
@@ -3330,23 +3182,20 @@ function saveEditStudent() {
 }
 
 // ─── EXPORT CSV ───────────────────────────────────────────────
-// ─── Get currently filtered attendance records ────────────────
 function getFilteredAttendanceRecords() {
   const search    = (document.getElementById('att-search')?.value || '').toLowerCase().trim();
   const filterCls = document.getElementById('att-filter-class')?.value || '';
   const filterDt  = document.getElementById('att-filter-date')?.value  || '';
   const filterWa  = document.getElementById('att-filter-wa')?.value    || '';
   const sort      = document.getElementById('att-sort')?.value || 'newest';
-
   let records = state.attendances.filter(a => {
-    if (search && !((a.name||'').toLowerCase().includes(search) || (a.roll||'').toLowerCase().includes(search) || (a.class||'').toLowerCase().includes(search))) return false;
+    if (search && !((a.name||'').toLowerCase().includes(search) || (a.roll||'').toLowerCase().includes(search))) return false;
     if (filterCls && a.class !== filterCls) return false;
     if (filterDt  && a.dateKey !== filterDt) return false;
     if (filterWa === 'sent'    && !a.waSent) return false;
     if (filterWa === 'pending' &&  a.waSent) return false;
     return true;
   });
-
   if (sort === 'newest') records.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
   else if (sort === 'oldest') records.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
   else if (sort === 'name') records.sort((a,b) => (a.name||'').localeCompare(b.name||''));
@@ -3359,11 +3208,9 @@ function exportAttendanceCSV() {
   if (!records.length) { alert("No records to export (check your filters)."); return; }
   const headers = ["Date", "Time", "Student Name", "Roll No", "Class", "Student Phone", "Parent Phone", "Match %", "WA Sent"];
   const rows = records.map(r => [
-    r.dateLabel    || r.date,
-    r.timeLabel    || "",
+    r.dateLabel || r.date, r.timeLabel || "",
     r.name, r.roll, r.class,
-    r.studentPhone || "",
-    r.parentPhone  || "",
+    r.studentPhone || "", r.parentPhone || "",
     r.matchPercent != null ? `${r.matchPercent}%` : "",
     r.waSent ? "Yes" : "No",
   ]);
@@ -3381,7 +3228,7 @@ function exportAttendanceCSV() {
 function exportAttendancePDF() {
   const records = getFilteredAttendanceRecords();
   if (!records.length) { alert("No records to export (check your filters)."); return; }
-  const instituteName = escapeHtml(state.settings.instituteName || "Unacademy Gwalior Branch");
+  const instituteName = escapeHtml(state.settings.instituteName || "FaceScan Attendance");
   const exportDate    = formatDateTime(new Date());
   const tableRows = records.map((r, i) => `
     <tr style="background:${i % 2 === 0 ? "#f8fafc" : "#fff"};">

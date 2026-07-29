@@ -5,7 +5,7 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
-  // { url: "http://192.168.1.100:8080", user: "admin", pass: "password", label: "Device 1" },
+ { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────

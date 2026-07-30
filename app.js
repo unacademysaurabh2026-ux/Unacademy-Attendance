@@ -1178,11 +1178,8 @@ async function runFrozenFrameRecognition(frozenCanvas) {
     state.attendances.unshift(record);
     saveData();
     // Count SMS immediately on attendance mark (regardless of SMS success)
-    const activeSlot = getActiveSlot();
-    if (activeSlot) {
-      incrementSmsCountForSlot(activeSlot.idx);
-      updateSmsUsageDisplay();
-    }
+    incrementSmsCountForSlot(0);
+    updateSmsUsageDisplay();
     autoSendSms(record);
     playSound("match");
 
@@ -2883,11 +2880,8 @@ function markUnidentifiedAttendance(entryId) {
   updateUnidentifiedBadge();
   renderUnidentifiedList();
   // Count SMS immediately on attendance mark
-  const activeSlot = getActiveSlot();
-  if (activeSlot) {
-    incrementSmsCountForSlot(activeSlot.idx);
-    updateSmsUsageDisplay();
-  }
+  incrementSmsCountForSlot(0);
+  updateSmsUsageDisplay();
   autoSendSms(record);
   showUnidentifiedSuccessPopup(record);
 }

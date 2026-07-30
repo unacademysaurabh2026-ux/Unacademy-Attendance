@@ -180,7 +180,14 @@ async function loadFromSheets() {
       });
       const localOnly = local.filter(l => !studentsRes.students.find(s => s.id === l.id));
       state.students  = [...merged, ...localOnly].map(normalizeStudent).filter(Boolean);
-      localStorage.setItem(STORAGE_KEYS.students, JSON.stringify(state.students));
+      // Save without embeddings to avoid localStorage quota exceeded
+      const studentsLight = state.students.map(s => {
+        const { descriptors, descriptor, ...rest } = s;
+        return { ...rest, embeddingCount: s.embeddingCount || descriptors?.length || 0 };
+      });
+      try { localStorage.setItem(STORAGE_KEYS.students, JSON.stringify(studentsLight)); } catch(_) {
+        localStorage.removeItem(STORAGE_KEYS.students); // clear if still too large
+      }
     }
 
     // Merge attendance
@@ -191,7 +198,7 @@ async function loadFromSheets() {
       state.attendances = [...attendanceRes.records, ...localOnly]
         .map(normalizeAttendance).filter(Boolean)
         .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(state.attendances));
+      try { localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(state.attendances.map(a => ({...a, scanPhoto: ""})))); } catch(_) {}
     }
 
     updateDashboardStats?.();

@@ -5,7 +5,7 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
-{ url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
+  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────
@@ -314,7 +314,9 @@ function _doSaveData() {
       return { ...rest, embeddingCount: (descriptors?.length || (descriptor ? 1 : 0)) };
     });
     localStorage.setItem(STORAGE_KEYS.students,     JSON.stringify(studentsLight));
-    localStorage.setItem(STORAGE_KEYS.attendance,   JSON.stringify(state.attendances.map(a => ({ ...a, scanPhoto: "" }))));
+    // Save only last 500 attendance records to avoid quota
+    const attLight = state.attendances.slice(0, 500).map(a => ({ ...a, scanPhoto: "" }));
+    localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(attLight));
     localStorage.setItem(STORAGE_KEYS.trash,        JSON.stringify(state.trash));
     localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
     updateDashboardStats();
@@ -1175,6 +1177,12 @@ async function runFrozenFrameRecognition(frozenCanvas) {
 
     state.attendances.unshift(record);
     saveData();
+    // Count SMS immediately on attendance mark (regardless of SMS success)
+    const activeSlot = getActiveSlot();
+    if (activeSlot) {
+      incrementSmsCountForSlot(activeSlot.idx);
+      updateSmsUsageDisplay();
+    }
     autoSendSms(record);
     playSound("match");
 
@@ -2263,8 +2271,6 @@ async function autoSendSms(record) {
         signal: AbortSignal.timeout(8000),
       });
       if (resp.ok || resp.status === 202) {
-        await incrementSmsCountForSlot(i);
-        updateSmsUsageDisplay();
         markWaSent(record.id);
         console.log('Auto SMS sent via Device ' + (i+1) + ' to', record.name);
         return;
@@ -2275,7 +2281,7 @@ async function autoSendSms(record) {
       console.warn('Device ' + (i+1) + ' error:', e.message, '— trying next');
     }
   }
-  console.error('All SMS slots failed for', record.name);
+  console.warn('All SMS slots failed for', record.name);
 }
 
 async function sendSmsAlert(recordId, phone, name, time, btn) {
@@ -2876,6 +2882,12 @@ function markUnidentifiedAttendance(entryId) {
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
   renderUnidentifiedList();
+  // Count SMS immediately on attendance mark
+  const activeSlot = getActiveSlot();
+  if (activeSlot) {
+    incrementSmsCountForSlot(activeSlot.idx);
+    updateSmsUsageDisplay();
+  }
   autoSendSms(record);
   showUnidentifiedSuccessPopup(record);
 }

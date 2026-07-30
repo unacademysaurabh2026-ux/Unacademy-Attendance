@@ -5,7 +5,7 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL Ji" },
+{ url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────
@@ -958,6 +958,11 @@ async function registerStudent(event) {
 
 // ─── ATTENDANCE SCANNING ──────────────────────────────────────
 async function startAttendanceCamera() {
+  // If no students in memory, try loading from Sheet first
+  if (!state.students.length && typeof loadFromSheets === "function") {
+    dom.attendanceStatus.textContent = "Loading students from Sheet…";
+    try { await loadFromSheets(); } catch(_) {}
+  }
   if (!state.students.length) {
     dom.attendanceStatus.textContent = "Register at least one student before attendance scan.";
     return;

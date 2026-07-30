@@ -5,7 +5,7 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
-{ url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL JHA" },
+  // { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL JHA" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────
@@ -261,6 +261,8 @@ function loadData() {
   state.unidentified  = Array.isArray(savedUnidentified) ? savedUnidentified : [];
   state.avgDescriptors = loadJson(STORAGE_KEYS.avgDescs, {});
   setTimeout(() => migrateAvgDescriptors(), 500);
+  // Clear old large data from localStorage to free quota
+  try { localStorage.removeItem("face-attendance-students"); } catch(_) {}
 }
 
 // ─── Averaged descriptor helpers ─────────────────────────────
@@ -306,8 +308,13 @@ function saveData(immediate = false) {
 function _doSaveData() {
   try {
     localStorage.setItem(STORAGE_KEYS.settings,     JSON.stringify(state.settings));
-    localStorage.setItem(STORAGE_KEYS.students,     JSON.stringify(state.students));
-    localStorage.setItem(STORAGE_KEYS.attendance,   JSON.stringify(state.attendances));
+    // Strip face embeddings before saving to localStorage — they live in Google Sheet
+    const studentsLight = state.students.map(s => {
+      const { descriptors, descriptor, ...rest } = s;
+      return { ...rest, embeddingCount: (descriptors?.length || (descriptor ? 1 : 0)) };
+    });
+    localStorage.setItem(STORAGE_KEYS.students,     JSON.stringify(studentsLight));
+    localStorage.setItem(STORAGE_KEYS.attendance,   JSON.stringify(state.attendances.map(a => ({ ...a, scanPhoto: "" }))));
     localStorage.setItem(STORAGE_KEYS.trash,        JSON.stringify(state.trash));
     localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
     updateDashboardStats();
@@ -320,12 +327,6 @@ function _doSaveData() {
     if (active === "unidentified") renderUnidentifiedList();
   } catch(e) {
     console.error("saveData failed:", e);
-    try {
-      const light = state.attendances.map(a => ({ ...a, scanPhoto: "" }));
-      localStorage.setItem(STORAGE_KEYS.attendance, JSON.stringify(light));
-      localStorage.setItem(STORAGE_KEYS.students,   JSON.stringify(state.students));
-      updateDashboardStats();
-    } catch(e2) { console.error("saveData fallback failed:", e2); }
   }
 }
 

@@ -5,7 +5,7 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
+{ url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────
@@ -2116,7 +2116,9 @@ async function incrementSmsCountForSlot(slotIdx) {
   try {
     const url = window.SHEETS_URL;
     if (!url) return;
-    await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "updateSmsCount", slotIndex: slotIdx, label, increment: 1 }))}`);
+    const resp = await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "updateSmsCount", slotIndex: slotIdx, label, increment: 1 }))}`);
+    const data = await resp.json();
+    console.log("SMS count Sheet update:", data);
   } catch(e) { console.warn("SMS count Sheet update failed:", e); }
 }
 

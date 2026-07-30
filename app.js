@@ -5,7 +5,7 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
- { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
+{ url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL JHA" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────
@@ -2103,7 +2103,7 @@ async function incrementSmsCountForSlot(slotIdx) {
   localStorage.setItem(key, _smsCountCache[slotIdx]);
   // Update Google Sheet in background
   try {
-    const url = state.settings.sheetsUrl;
+    const url = window.SHEETS_URL;
     if (!url) return;
     await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "updateSmsCount", slotIndex: slotIdx, label, increment: 1 }))}`);
   } catch(e) { console.warn("SMS count Sheet update failed:", e); }
@@ -2111,7 +2111,7 @@ async function incrementSmsCountForSlot(slotIdx) {
 
 async function loadSmsCountFromSheet() {
   try {
-    const url = state.settings.sheetsUrl;
+    const url = window.SHEETS_URL;
     if (!url) return;
     const res  = await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "getSmsCount" }))}`);
     const data = await res.json();

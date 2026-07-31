@@ -706,12 +706,12 @@
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
           <div>
             <h2 class="text-2xl font-semibold flex items-center gap-2">
-              ❓ Unidentified Scans
+              ❓ Manual Attendance
               <span id="unidentified-badge-inline"
                 class="bg-amber-500 text-white text-xs font-bold px-2 py-0.5 rounded-xl"></span>
             </h2>
             <p class="text-slate-400 text-sm mt-1">
-              Faces captured but not recognised. Select a student and mark attendance using the <strong class="text-amber-300">original scan time</strong>.
+              Mark attendance manually for any student — search by name or scroll.
             </p>
           </div>
           <button onclick="clearResolvedUnidentified()"
@@ -724,17 +724,23 @@
           </button>
         </div>
 
-        <!-- Search bar removed — search is now inside each entry panel -->
-
-        <!-- Info box -->
-        <div class="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 mb-5 text-sm">
-          <div class="flex items-start gap-3">
-            <span class="text-2xl">⏱️</span>
-            <div>
-              <p class="font-semibold text-amber-300 mb-1">Original Scan Time is Preserved</p>
-              <p class="text-amber-200/70">When you mark attendance here, the system uses the exact time the face was scanned — not the current time. WhatsApp messages will also show the original scan time.</p>
-            </div>
+        <!-- Manual Attendance Panel -->
+        <div class="bg-slate-900 border border-sky-500/30 rounded-3xl p-5 mb-6">
+          <h3 class="text-base font-bold text-sky-400 mb-3">➕ Mark Manual Attendance</h3>
+          <div class="relative mb-3">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">🔍</span>
+            <input type="text" id="manual-att-search" placeholder="Search student name or roll number…"
+              oninput="filterManualAttList(this.value)"
+              class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-2xl pl-10 pr-4 py-3 text-sm text-slate-100 placeholder-slate-500"/>
           </div>
+          <div id="manual-att-list" class="space-y-2 max-h-72 overflow-y-auto pr-1" style="scrollbar-width:thin;">
+            <p class="text-slate-500 text-sm text-center py-4">Search a student to mark attendance</p>
+          </div>
+        </div>
+
+        <!-- Unidentified entries -->
+        <div class="mb-3 flex items-center justify-between">
+          <h3 class="text-base font-semibold text-slate-300">📋 Unidentified Scan Entries</h3>
         </div>
 
         <div id="unidentified-list" class="space-y-4">

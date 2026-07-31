@@ -5,7 +5,7 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
-{ url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
+  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────
@@ -1178,7 +1178,6 @@ async function runFrozenFrameRecognition(frozenCanvas) {
     state.attendances.unshift(record);
     saveData();
     // Count SMS immediately on attendance mark (regardless of SMS success)
-    incrementSmsCountForSlot(0);
     updateSmsUsageDisplay();
     autoSendSms(record);
     playSound("match");
@@ -2088,61 +2087,39 @@ async function testSmsGatewaySlot(idx) {
   }
 }
 
-// ─── SMS Count — Google Sheet based ──────────────────────────
-let _smsCountCache = {};
-let _smsCountDate  = "";
+// ─── SMS Count — Attendance Sheet based ──────────────────────
+const SMS_DAILY_LIMIT = 100;
+
+// Count today's attendance from state (loaded from Sheet)
+function getTodayAttendanceCount() {
+  const today = getLocalDateKey(new Date());
+  return state.attendances.filter(a => a.dateKey === today).length;
+}
+
+// Which slot to use: every 100 attendances = next slot
+function getActiveSlotByCount() {
+  const slots = getSmsSlots();
+  if (!slots.length) return null;
+  const total    = getTodayAttendanceCount();
+  const slotIdx  = Math.floor(total / SMS_DAILY_LIMIT);
+  if (slotIdx >= slots.length) return null;
+  return { slot: slots[slotIdx], idx: slotIdx };
+}
+
+function getActiveSlot() { return getActiveSlotByCount(); }
 
 function getSmsCountTodayForSlot(slotIdx) {
-  const today = getLocalDateKey(new Date());
-  if (_smsCountDate && _smsCountDate !== today) _smsCountCache = {};
-  // Fallback to localStorage if Sheet not loaded yet
-  if (!_smsCountDate) {
-    return parseInt(localStorage.getItem('sms-count-' + today + '-slot' + slotIdx) || '0');
-  }
-  return _smsCountCache[slotIdx] || 0;
+  const total = getTodayAttendanceCount();
+  const start = slotIdx * SMS_DAILY_LIMIT;
+  return Math.max(0, Math.min(total - start, SMS_DAILY_LIMIT));
 }
 
-async function incrementSmsCountForSlot(slotIdx) {
-  const slots = getSmsSlots();
-  const label = slots[slotIdx]?.label || `Device ${slotIdx + 1}`;
-  const today = getLocalDateKey(new Date());
-  // Update local cache
-  _smsCountCache[slotIdx] = (_smsCountCache[slotIdx] || 0) + 1;
-  _smsCountDate = today;
-  // Also update localStorage as backup
-  const key = 'sms-count-' + today + '-slot' + slotIdx;
-  localStorage.setItem(key, _smsCountCache[slotIdx]);
-  // Update Google Sheet in background
-  try {
-    const url = window.SHEETS_URL;
-    if (!url) return;
-    const resp = await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "updateSmsCount", slotIndex: slotIdx, label, increment: 1 }))}`);
-    const data = await resp.json();
-    console.log("SMS count Sheet update:", data);
-  } catch(e) { console.warn("SMS count Sheet update failed:", e); }
-}
+function getSmsCountToday() { return getTodayAttendanceCount(); }
 
-async function loadSmsCountFromSheet() {
-  try {
-    const url = window.SHEETS_URL;
-    if (!url) return;
-    const res  = await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({ action: "getSmsCount" }))}`);
-    const data = await res.json();
-    if (data.ok && Array.isArray(data.counts)) {
-      _smsCountCache = {};
-      _smsCountDate  = data.today;
-      data.counts.forEach(c => { _smsCountCache[c.slotIndex] = c.count; });
-    }
-  } catch(e) { console.warn("SMS count load failed:", e); }
-}
-
-function getActiveSlot() {
-  const slots = getSmsSlots();
-  for (let i = 0; i < slots.length; i++) {
-    if (getSmsCountTodayForSlot(i) < SMS_DAILY_LIMIT && slots[i].url) return { slot: slots[i], idx: i };
-  }
-  return null;
-}
+// No-op — count comes from attendance sheet now
+async function incrementSmsCountForSlot(slotIdx) {}
+async function loadSmsCountFromSheet() {}
+function incrementSmsCount() {}
 
 function loadSmsGatewayUrl() {
   const legacyUrl  = localStorage.getItem('sms-gateway-url')  || '';
@@ -2152,30 +2129,14 @@ function loadSmsGatewayUrl() {
     saveSmsSlots([{ url: legacyUrl, user: legacyUser, pass: legacyPass, label: 'Device 1' }]);
     localStorage.removeItem('sms-gateway-url');
   }
-  loadSmsCountFromSheet().then(() => {
-    renderSmsSlots();
-    updateSmsUsageDisplay();
-  });
+  renderSmsSlots();
+  updateSmsUsageDisplay();
 }
 
 function updateSmsUsageDisplay() {
   const el = document.getElementById('sms-used-today');
   if (el) el.textContent = getSmsCountToday();
   renderSmsSlots();
-}
-
-// ─── SMS / WhatsApp Split Panel ───────────────────────────────
-const SMS_DAILY_LIMIT = 100;
-
-function getSmsCountToday() {
-  const slots = getSmsSlots();
-  let total = 0;
-  for (let i = 0; i < slots.length; i++) total += getSmsCountTodayForSlot(i);
-  return total;
-}
-
-function incrementSmsCount() {
-  // Increment is now handled per-slot in autoSendSms
 }
 
 function showSmsSplitPanel() {
@@ -2882,7 +2843,6 @@ function markUnidentifiedAttendance(entryId) {
   updateUnidentifiedBadge();
   renderUnidentifiedList();
   // Count SMS immediately on attendance mark
-  incrementSmsCountForSlot(0);
   updateSmsUsageDisplay();
   autoSendSms(record);
   showUnidentifiedSuccessPopup(record);

@@ -375,7 +375,10 @@ function showSection(section) {
   }
   if (section === "records")     requestAnimationFrame(() => showStudentsList());
   if (section === "trash")       requestAnimationFrame(() => renderTrash());
-  if (section === "unidentified") requestAnimationFrame(() => renderUnidentifiedList());
+  if (section === "unidentified") requestAnimationFrame(() => {
+    renderUnidentifiedList();
+    filterManualAttList("");
+  });
 }
 
 // ─── Camera core ──────────────────────────────────────────────
@@ -2936,6 +2939,87 @@ function deleteAllUnidentified() {
   localStorage.setItem(STORAGE_KEYS.unidentified, JSON.stringify(state.unidentified));
   updateUnidentifiedBadge();
   renderUnidentifiedList();
+}
+
+// ─── Manual Attendance ────────────────────────────────────────
+function filterManualAttList(query) {
+  const listEl = document.getElementById("manual-att-list");
+  if (!listEl) return;
+  const q = query.trim().toLowerCase();
+  if (!q) {
+    listEl.innerHTML = '<p class="text-slate-500 text-sm text-center py-4">Search a student to mark attendance</p>';
+    return;
+  }
+  const filtered = state.students.filter(s =>
+    s.name.toLowerCase().includes(q) || (s.roll||"").toLowerCase().includes(q)
+  );
+  if (!filtered.length) {
+    listEl.innerHTML = '<p class="text-slate-400 text-sm text-center py-4">No students found</p>';
+    return;
+  }
+  listEl.innerHTML = filtered.map(s => `
+    <div class="flex items-center justify-between bg-slate-800 hover:bg-slate-700 rounded-2xl px-4 py-3 transition-colors">
+      <div>
+        <div class="font-semibold text-sm text-slate-100">${escapeHtml(s.name)}</div>
+        <div class="text-xs text-slate-400">Roll: ${escapeHtml(s.roll)} · ${escapeHtml(s.class)}</div>
+      </div>
+      <button type="button"
+        onclick="markManualAttendance('${escapeHtml(s.id)}')"
+        class="bg-sky-500 hover:bg-sky-400 active:scale-95 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all">
+        ✅ Mark
+      </button>
+    </div>
+  `).join('');
+}
+
+function markManualAttendance(studentId) {
+  const student = state.students.find(s => s.id === studentId);
+  if (!student) { alert("Student not found."); return; }
+
+  const now = new Date();
+  const dateKey = getLocalDateKey(now);
+
+  // Check duplicate
+  const alreadyMarked = state.attendances.find(a => a.studentId === studentId && a.dateKey === dateKey);
+  if (alreadyMarked) {
+    alert(`${student.name} is already marked present today at ${alreadyMarked.formattedTime}.`);
+    return;
+  }
+
+  const record = {
+    id:           `ATT-M-${Date.now()}`,
+    studentId:    student.id,
+    name:         student.name,
+    roll:         student.roll,
+    class:        student.class,
+    studentPhone: student.studentPhone,
+    parentPhone:  student.parentPhone,
+    dateKey,
+    date:         dateKey,
+    timestamp:    now.toISOString(),
+    dateLabel:    formatDate(now),
+    timeLabel:    formatTime(now),
+    formattedTime: formatDateTime(now),
+    scanPhoto:    "",
+    matchDistance: null,
+    matchPercent:  null,
+    punchType:    "manual",
+    syncState:    "local-only",
+    waSent:       false,
+  };
+
+  state.attendances.unshift(record);
+  saveData(true);
+  autoSendSms(record);
+  if (typeof syncAttendanceToSheets === "function") syncAttendanceToSheets(record);
+
+  // Show success feedback
+  playSound("match");
+  showQuickToast(record);
+
+  // Clear search
+  const searchEl = document.getElementById("manual-att-search");
+  if (searchEl) { searchEl.value = ""; filterManualAttList(""); }
 }
 
 function filterUnkStudentList(entryId, query) {

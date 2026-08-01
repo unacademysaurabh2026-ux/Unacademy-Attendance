@@ -13,8 +13,12 @@
       matchThreshold: 0.47,
       modelUrl: "https://cdn.jsdelivr.net/gh/vladmandic/face-api/model/",
     };
+    // ── SMS Devices — edit here to add your devices ──
+    window.HARDCODED_SMS_DEVICES = [
+      // { url: "http://192.168.1.100:8080", user: "admin", pass: "password", label: "Device 1" },
+    ];
   </script>
-  <script src="sheets-sync.js" defer></script>
+  <script src="sheets-sync.js"></script>
   <style>
     body { background: #020617; color: #f1f5f9; font-family: 'Inter', sans-serif; margin: 0; min-height: 100vh; }
     * { -webkit-tap-highlight-color: transparent; }
@@ -66,7 +70,6 @@
   <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-emerald-500 text-white font-bold px-6 py-3 rounded-2xl shadow-2xl z-50 text-sm"></div>
 </div>
 
-<script src="sheets-sync.js"></script>
 <script>
 // ─── State ────────────────────────────────────────────────────
 const SHEETS_URL = window.SHEETS_URL || "";
@@ -195,25 +198,21 @@ async function markAttendance(studentId) {
     matchPercent:  "",
   };
 
-  // Save to Sheet
-  const url = window.SHEETS_URL;
-  if (url && url !== "PASTE_YOUR_APPS_SCRIPT_URL_HERE") {
-    try {
-      await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"saveAttendance",...record}))}`);
-    } catch(e) { console.warn("Sheet sync failed:", e); }
-  }
-
-  // Update local state
+  // Update local state IMMEDIATELY — don't wait for Sheet
   attendances.push(record);
   updateStats();
-
-  // Re-render
   const q = document.getElementById('search-input').value;
   renderList(q);
-
   showToast(`✅ ${student.name} marked present!`);
 
-  // Send SMS if parent phone exists
+  // Save to Sheet in background
+  const url = window.SHEETS_URL;
+  if (url && url !== "PASTE_YOUR_APPS_SCRIPT_URL_HERE") {
+    fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"saveAttendance",...record}))}`)
+      .catch(e => console.warn("Sheet sync failed:", e));
+  }
+
+  // Send SMS in background
   if (student.parentPhone) sendSms(student, record);
 }
 

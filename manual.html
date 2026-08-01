@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>FaceScan • Manual Attendance</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="styles.css" />
+  <script>
+    window.FACESCAN_CONFIG = {
+      instituteName: "FaceScan Attendance",
+      deviceLabel:   "Institute Device",
+      matchThreshold: 0.47,
+      modelUrl: "https://cdn.jsdelivr.net/gh/vladmandic/face-api/model/",
+    };
+  </script>
+  <script src="sheets-sync.js" defer></script>
+  <style>
+    body { background: #020617; color: #f1f5f9; font-family: 'Inter', sans-serif; margin: 0; min-height: 100vh; }
+    * { -webkit-tap-highlight-color: transparent; }
+    button { touch-action: manipulation; user-select: none; }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-50">
+  <div class="flex items-center gap-3">
+    <button onclick="window.close()" class="text-slate-400 hover:text-white text-sm px-3 py-1.5 bg-slate-800 rounded-xl">← Close</button>
+    <span class="font-bold text-white">✏️ Manual Attendance</span>
+  </div>
+  <div id="top-clock" class="text-xs text-slate-400 font-mono"></div>
+</div>
+
+<!-- Main content -->
+<div class="max-w-xl mx-auto px-4 pt-5 pb-10">
+
+  <!-- Status bar -->
+  <div id="status-bar" class="text-center text-sm text-slate-400 mb-4">Loading students…</div>
+
+  <!-- Today stats -->
+  <div class="grid grid-cols-2 gap-3 mb-5">
+    <div class="bg-slate-900 rounded-2xl p-4 text-center">
+      <div id="stat-total-students" class="text-2xl font-bold text-sky-400">—</div>
+      <div class="text-xs text-slate-400 mt-1">Total Students</div>
+    </div>
+    <div class="bg-slate-900 rounded-2xl p-4 text-center">
+      <div id="stat-today-count" class="text-2xl font-bold text-emerald-400">—</div>
+      <div class="text-xs text-slate-400 mt-1">Marked Today</div>
+    </div>
+  </div>
+
+  <!-- Search box -->
+  <div class="relative mb-4">
+    <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-lg pointer-events-none">🔍</span>
+    <input type="text" id="search-input"
+      placeholder="Search by name or roll number…"
+      oninput="filterStudents(this.value)"
+      class="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-2xl pl-12 pr-4 py-3 text-base text-slate-100 placeholder-slate-500"/>
+  </div>
+
+  <!-- Student list -->
+  <div id="student-list" class="space-y-2"></div>
+
+  <!-- Success toast -->
+  <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-emerald-500 text-white font-bold px-6 py-3 rounded-2xl shadow-2xl z-50 text-sm"></div>
+</div>
+
+<script src="sheets-sync.js"></script>
+<script>
+// ─── State ────────────────────────────────────────────────────
+const SHEETS_URL = window.SHEETS_URL || "";
+let students = [];
+let attendances = [];
+let todayKey = "";
+
+// ─── Init ─────────────────────────────────────────────────────
+function getLocalDateKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function formatTime(d) {
+  return d.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit', hour12:true});
+}
+function formatDateTime(d) {
+  return d.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) + ', ' + formatTime(d);
+}
+
+function updateClock() {
+  const el = document.getElementById('top-clock');
+  if (el) el.textContent = formatTime(new Date());
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+todayKey = getLocalDateKey(new Date());
+
+// Load from Sheet
+async function loadData() {
+  const url = window.SHEETS_URL;
+  if (!url || url === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") {
+    setStatus("⚠️ Google Sheet not connected.");
+    return;
+  }
+  setStatus("Loading students…");
+  try {
+    const [studRes, attRes] = await Promise.all([
+      fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getStudents"}))}`).then(r=>r.json()),
+      fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getAllAttendance"}))}`).then(r=>r.json()),
+    ]);
+    if (studRes.ok) students = studRes.students || [];
+    if (attRes.ok)  attendances = attRes.records || [];
+    updateStats();
+    renderList("");
+    setStatus(`✅ ${students.length} students loaded`);
+    setTimeout(() => setStatus(""), 2000);
+  } catch(e) {
+    setStatus("❌ Failed to load. Check connection.");
+  }
+}
+
+function updateStats() {
+  const todayAtt = attendances.filter(a => a.dateKey === todayKey);
+  document.getElementById('stat-total-students').textContent = students.length;
+  document.getElementById('stat-today-count').textContent    = todayAtt.length;
+}
+
+function setStatus(msg) {
+  document.getElementById('status-bar').textContent = msg;
+}
+
+function isMarkedToday(studentId) {
+  return attendances.some(a => a.studentId === studentId && a.dateKey === todayKey);
+}
+
+function renderList(query) {
+  const el = document.getElementById('student-list');
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? students.filter(s => s.name.toLowerCase().includes(q) || (s.roll||"").toLowerCase().includes(q))
+    : students;
+
+  if (!filtered.length) {
+    el.innerHTML = '<p class="text-center text-slate-500 py-8">No students found</p>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(s => {
+    const marked = isMarkedToday(s.id);
+    return `
+      <div class="flex items-center justify-between bg-slate-900 border ${marked ? 'border-emerald-500/40' : 'border-slate-700'} rounded-2xl px-4 py-3 transition-all">
+        <div>
+          <div class="font-semibold text-sm ${marked ? 'text-emerald-400' : 'text-slate-100'}">${escHtml(s.name)}</div>
+          <div class="text-xs text-slate-400">Roll: ${escHtml(s.roll||'-')} · ${escHtml(s.class||'-')}</div>
+        </div>
+        ${marked
+          ? '<span class="text-emerald-400 text-xs font-bold px-3 py-1.5 bg-emerald-500/10 rounded-xl">✅ Present</span>'
+          : `<button onclick="markAttendance('${s.id}')"
+               class="bg-sky-500 hover:bg-sky-400 active:scale-95 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all">
+               Mark
+             </button>`
+        }
+      </div>`;
+  }).join('');
+}
+
+function filterStudents(q) { renderList(q); }
+
+function escHtml(str) {
+  return String(str||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+async function markAttendance(studentId) {
+  const student = students.find(s => s.id === studentId);
+  if (!student) return;
+  if (isMarkedToday(studentId)) { showToast(`${student.name} already marked!`); return; }
+
+  const now = new Date();
+  const record = {
+    id:           `ATT-M-${Date.now()}`,
+    studentId:    student.id,
+    studentUniqueId: student.studentUniqueId || student.id,
+    name:         student.name,
+    roll:         student.roll,
+    class:        student.class,
+    studentPhone: student.studentPhone || "",
+    parentPhone:  student.parentPhone  || "",
+    dateKey:      todayKey,
+    date:         todayKey,
+    timestamp:    now.toISOString(),
+    dateLabel:    now.toLocaleDateString('en-IN'),
+    timeLabel:    formatTime(now),
+    formattedTime: formatDateTime(now),
+    punchType:    "manual",
+    matchDistance: "",
+    matchPercent:  "",
+  };
+
+  // Save to Sheet
+  const url = window.SHEETS_URL;
+  if (url && url !== "PASTE_YOUR_APPS_SCRIPT_URL_HERE") {
+    try {
+      await fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"saveAttendance",...record}))}`);
+    } catch(e) { console.warn("Sheet sync failed:", e); }
+  }
+
+  // Update local state
+  attendances.push(record);
+  updateStats();
+
+  // Re-render
+  const q = document.getElementById('search-input').value;
+  renderList(q);
+
+  showToast(`✅ ${student.name} marked present!`);
+
+  // Send SMS if parent phone exists
+  if (student.parentPhone) sendSms(student, record);
+}
+
+async function sendSms(student, record) {
+  const slots = window.HARDCODED_SMS_DEVICES || [];
+  if (!slots.length) return;
+  const total   = attendances.filter(a => a.dateKey === todayKey).length;
+  const slotIdx = Math.min(Math.floor(total / 100), slots.length - 1);
+  const slot    = slots[slotIdx];
+  if (!slot?.url) return;
+
+  let phone = (student.parentPhone||"").replace(/\D/g,'');
+  if (phone.length === 10) phone = '+91' + phone;
+  const msg = `Dear Parent, ${student.name} has marked attendance today at ${record.formattedTime}. - ${window.FACESCAN_CONFIG?.instituteName || 'Institute'}`;
+
+  try {
+    await fetch(slot.url.trim().replace(/\/$/,'') + '/3rdparty/v1/messages?skipPhoneValidation=true', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'Authorization':'Basic '+btoa((slot.user||'')+':'+(slot.pass||'')) },
+      body: JSON.stringify({ textMessage:{text:msg}, phoneNumbers:[phone] }),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch(e) { console.warn("SMS failed:", e); }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 2500);
+}
+
+// Init
+loadData();
+</script>
+</body>
+</html>

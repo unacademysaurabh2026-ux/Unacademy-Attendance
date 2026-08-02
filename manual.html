@@ -73,6 +73,9 @@
 <script>
 // ─── State ────────────────────────────────────────────────────
 const SHEETS_URL = window.SHEETS_URL || "";
+const CACHE_KEY_STUDENTS = 'manual-cache-students';
+const CACHE_KEY_ATT      = 'manual-cache-att';
+const CACHE_DATE_KEY     = 'manual-cache-date';
 let students = [];
 let attendances = [];
 let todayKey = "";
@@ -97,27 +100,50 @@ updateClock();
 
 todayKey = getLocalDateKey(new Date());
 
-// Load from Sheet
+// Load from cache first, then fetch from Sheet
 async function loadData() {
   const url = window.SHEETS_URL;
+
+  // ── Step 1: Load from localStorage cache instantly ──
+  const cachedStudents = localStorage.getItem(CACHE_KEY_STUDENTS);
+  const cachedAtt      = localStorage.getItem(CACHE_KEY_ATT);
+  const cachedDate     = localStorage.getItem(CACHE_DATE_KEY);
+
+  if (cachedStudents) {
+    students = JSON.parse(cachedStudents);
+    // Only use cached attendance if it's from today
+    attendances = (cachedDate === todayKey && cachedAtt) ? JSON.parse(cachedAtt) : [];
+    updateStats();
+    renderList("");
+    setStatus(`📦 ${students.length} students (cached) — refreshing…`);
+  }
+
   if (!url || url === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") {
-    setStatus("⚠️ Google Sheet not connected.");
+    setStatus(cachedStudents ? "✅ Loaded from cache" : "⚠️ Google Sheet not connected.");
     return;
   }
-  setStatus("Loading students…");
+
+  // ── Step 2: Fetch fresh from Sheet in background ──
   try {
     const [studRes, attRes] = await Promise.all([
       fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getStudents"}))}`).then(r=>r.json()),
       fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getAllAttendance"}))}`).then(r=>r.json()),
     ]);
-    if (studRes.ok) students = studRes.students || [];
-    if (attRes.ok)  attendances = attRes.records || [];
+    if (studRes.ok) {
+      students = studRes.students || [];
+      localStorage.setItem(CACHE_KEY_STUDENTS, JSON.stringify(students));
+    }
+    if (attRes.ok) {
+      attendances = attRes.records || [];
+      localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
+      localStorage.setItem(CACHE_DATE_KEY, todayKey);
+    }
     updateStats();
-    renderList("");
+    renderList(document.getElementById('search-input').value);
     setStatus(`✅ ${students.length} students loaded`);
     setTimeout(() => setStatus(""), 2000);
   } catch(e) {
-    setStatus("❌ Failed to load. Check connection.");
+    setStatus(cachedStudents ? "⚠️ Using cached data (Sheet offline)" : "❌ Failed to load.");
   }
 }
 
@@ -200,6 +226,7 @@ async function markAttendance(studentId) {
 
   // Update local state IMMEDIATELY — don't wait for Sheet
   attendances.push(record);
+  localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
   updateStats();
   const q = document.getElementById('search-input').value;
   renderList(q);
@@ -244,6 +271,25 @@ function showToast(msg) {
   t.classList.remove('hidden');
   setTimeout(() => t.classList.add('hidden'), 2500);
 }
+
+// Refresh attendance when user comes back to page (minimize/reopen)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    const url = window.SHEETS_URL;
+    if (!url || url === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") return;
+    // Only refresh attendance, not students (students don't change often)
+    fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getAllAttendance"}))}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          attendances = data.records || [];
+          localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
+          updateStats();
+          renderList(document.getElementById('search-input').value);
+        }
+      }).catch(() => {});
+  }
+});
 
 // Init
 loadData();

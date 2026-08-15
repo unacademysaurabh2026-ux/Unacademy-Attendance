@@ -418,20 +418,8 @@
                 box-shadow: 0 0 0 4px rgba(255,255,255,0.2), 0 0 60px rgba(255,255,255,0.5), 0 0 100px rgba(255,255,255,0.2);
                 background: #0f172a;
               ">
-                <video id="register-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;"></video>
+                <video id="register-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;transform:scale(0.85);transform-origin:center center;"></video>
                 <canvas id="register-canvas" class="hidden"></canvas>
-
-                <!-- SVG Circular Progress Ring -->
-                <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:10;" viewBox="0 0 120 120">
-                  <!-- Background ring -->
-                  <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="4"/>
-                  <!-- Progress ring — fills clockwise -->
-                  <circle id="reg-progress-ring" cx="60" cy="60" r="54" fill="none"
-                    stroke="#22c55e" stroke-width="4" stroke-linecap="round"
-                    stroke-dasharray="339.3" stroke-dashoffset="339.3"
-                    transform="rotate(-90 60 60)"
-                    style="transition:stroke-dashoffset 0.15s ease,opacity 0.3s;opacity:0;"/>
-                </svg>
                 <div id="register-overlay" style="border-radius:50%;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);">
                   <button type="button" onclick="startRegisterCamera()" id="start-register-btn"
                     class="bg-white text-slate-900 px-6 py-3 rounded-3xl font-semibold flex items-center gap-x-2">

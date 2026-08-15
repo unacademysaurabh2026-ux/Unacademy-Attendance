@@ -5,9 +5,6 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "GGPYS2", pass: "saurabh@unacademy", label: "SAURABH" },
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "QWJN5I", pass: "puneet@unacademy", label: "PUNEET SIR" },
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "XY9PLS", pass: "deepak@unacademy", label: "DEEPAK" },
   { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL SIR" },
 ];
 
@@ -687,38 +684,37 @@ async function captureRegisterPhoto() {
 }
 
 function resetAllAngles() {
+  if (state.regFrameTimerId) {
+    clearInterval(state.regFrameTimerId);
+    state.regFrameTimerId = null;
+    state.regCapturing = false;
+  }
   state.currentAngleIndex  = 0;
-  state.angleData          = { front: null, left: null, right: null };
+  state.angleData          = { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null };
   state.registerDescriptors= null;
   state.registerPhoto      = null;
   state.regCollectedDescriptors = [];
   state.regCollectedPhotos = [];
   state.isUpdateMode       = false;
-  state.uploadedAngleFiles = { front: null, left: null, right: null };
-  for (const angle of ANGLES) {
-    const thumb = document.getElementById(`thumb-${angle.key}`);
+  state.uploadedAngleFiles = { front: null, left: null, right: null, up: null, down: null, tilt_left: null, tilt_right: null };
+
+  const icons = { front:"😐", left:"←", right:"→", up:"↑", down:"↓", tilt_left:"↗", tilt_right:"↘" };
+  for (const [key, icon] of Object.entries(icons)) {
+    const thumb = document.getElementById(`thumb-${key}`);
     if (thumb) {
-      thumb.innerHTML = `<span style="font-size:1.5rem;color:#475569;">${angle.icon}</span>`;
+      thumb.innerHTML = icon;
       thumb.style.borderColor = "";
       thumb.style.borderStyle = "dashed";
     }
   }
-  // Reset upload previews
-  for (const key of ["front","left","right"]) {
-    const up = document.getElementById(`upload-preview-${key}`);
-    if (up) up.innerHTML = `<span class="text-2xl">${key === "front" ? "😐" : key === "left" ? "←" : "→"}</span><span class="text-xs text-slate-500 mt-1">Tap to upload</span>`;
-  }
-  const instrEl = document.getElementById("angle-instruction");
-  if (instrEl) instrEl.textContent = "Start camera, then capture each angle one by one.";
-  dom.registerPreview.classList.add("hidden");
-  dom.registerPhotoPreview.removeAttribute("src");
-  const submitBtn = document.getElementById("register-submit-btn");
-  if (submitBtn) {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "✅ Register Student";
+
+  if (dom.registerVideo?.srcObject) {
+    dom.registerStatus.textContent = "Reset done. Capture each angle again.";
+  } else {
+    dom.registerStatus.textContent = "Reset done. Start camera to begin.";
   }
   updateAngleUI();
-  dom.registerStatus.textContent = "Angles reset. Start camera and capture again.";
+  dom.registerPreview?.classList.add("hidden");
 }
 
 function retakeRegisterPhoto() {

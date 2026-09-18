@@ -5,7 +5,10 @@
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
 const HARDCODED_SMS_DEVICES = [
+  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "GGPYS2", pass: "saurabh@unacademy", label: "SAURABH" },
   { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL SIR" },
+  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "XY9PLS", pass: "deepak@unacademy", label: "DEEPAK" },
+{ url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "QWJN5I", pass: "puneet@unacademy", label: "MUKUL SIR" },
 ];
 
 // ─── Storage Keys ────────────────────────────────────────────

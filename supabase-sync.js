@@ -323,7 +323,7 @@ function deserializeLegacyEmbeddings(str) {
 
 // ── Settings buttons ──────────────────────────────────────────
 function injectSyncButton() {
-  const sec = document.getElementById("section-settings");
+  const sec = document.getElementById("section-settings") || document.getElementById("section-home");
   if (!sec || document.getElementById("manual-sync-btn")) return;
   const div = document.createElement("div");
   div.className = "mt-6 p-5 bg-slate-900 border border-slate-700 rounded-3xl";
@@ -337,7 +337,7 @@ function injectSyncButton() {
       <button id="load-sheets-btn" type="button" class="px-5 py-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-semibold text-sm rounded-2xl">⬇️ Pull</button>
       <button id="migrate-sheets-btn" type="button" class="px-5 py-3 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 font-semibold text-sm rounded-2xl">📥 Migrate from Google Sheets</button>
     </div>`;
-  sec.prepend(div);
+  sec.appendChild(div);
   document.getElementById("manual-sync-btn").onclick   = fullSyncToSheets;
   document.getElementById("load-sheets-btn").onclick   = loadFromSupabase;
   document.getElementById("migrate-sheets-btn").onclick = migrateFromGoogleSheets;

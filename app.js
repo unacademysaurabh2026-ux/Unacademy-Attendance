@@ -264,8 +264,6 @@ function loadData() {
   state.unidentified  = Array.isArray(savedUnidentified) ? savedUnidentified : [];
   state.avgDescriptors = loadJson(STORAGE_KEYS.avgDescs, {});
   setTimeout(() => migrateAvgDescriptors(), 500);
-  // Clear old large data from localStorage to free quota
-  try { localStorage.removeItem("face-attendance-students"); } catch(_) {}
 }
 
 // ─── Averaged descriptor helpers ─────────────────────────────
@@ -311,7 +309,7 @@ function saveData(immediate = false) {
 function _doSaveData() {
   try {
     localStorage.setItem(STORAGE_KEYS.settings,     JSON.stringify(state.settings));
-    // Strip face embeddings before saving to localStorage — they live in Google Sheet
+    // Strip face embeddings before saving to localStorage — they live in Supabase
     const studentsLight = state.students.map(s => {
       const { descriptors, descriptor, ...rest } = s;
       return { ...rest, embeddingCount: (descriptors?.length || (descriptor ? 1 : 0)) };
@@ -965,10 +963,10 @@ async function registerStudent(event) {
 
 // ─── ATTENDANCE SCANNING ──────────────────────────────────────
 async function startAttendanceCamera() {
-  // If no students in memory, try loading from Sheet first
-  if (!state.students.length && typeof loadFromSheets === "function") {
-    dom.attendanceStatus.textContent = "Loading students from Sheet…";
-    try { await loadFromSheets(); } catch(_) {}
+  // Make sure face data is loaded (IndexedDB cache first, then Supabase)
+  if (typeof ensureFacesLoaded === "function") {
+    dom.attendanceStatus.textContent = "Loading face data…";
+    try { await ensureFacesLoaded(); } catch(_) {}
   }
   if (!state.students.length) {
     dom.attendanceStatus.textContent = "Register at least one student before attendance scan.";
@@ -3212,11 +3210,12 @@ function saveEditStudent() {
       left:  { count: _editAngle.descriptors.left.length },
       right: { count: _editAngle.descriptors.right.length },
     },
-    embeddings:     [
+    descriptors:    [
       ..._editAngle.descriptors.front,
       ..._editAngle.descriptors.left,
       ..._editAngle.descriptors.right,
     ],
+    descriptor:     null,
     embeddingCount: (
       _editAngle.descriptors.front.length +
       _editAngle.descriptors.left.length +
@@ -3237,6 +3236,7 @@ function saveEditStudent() {
       ? { ...a, name, roll, class: className, studentPhone, parentPhone }
       : a
   );
+  if (allAnglesScanned) { delete state.avgDescriptors[id]; computeAndCacheAvgDescriptor(state.students[idx]); saveAvgDescriptors(); }
   saveData();
   closeEditModal();
 }
@@ -3615,7 +3615,7 @@ async function handleImportBackup(jsonText) {
     }
 
     overlay.innerHTML =
-      "<div style=\"color:#f1f5f9;font-size:18px;font-weight:700;\">☁️ Syncing to Google Sheets...</div>" +
+      "<div style=\"color:#f1f5f9;font-size:18px;font-weight:700;\">☁️ Syncing to Supabase...</div>" +
       "<div style=\"width:300px;background:#1e293b;border-radius:99px;height:12px;overflow:hidden;\">" +
         "<div id=\"sync-bar\" style=\"height:100%;background:#10b981;width:0%;transition:width 0.2s;border-radius:99px;\"></div>" +
       "</div>" +
@@ -3820,7 +3820,7 @@ function normalizeAttendance(record) {
     scanPhoto:    "",  // Don't load scan photos to save memory
     matchDistance: record.matchDistance == null ? null : Number(record.matchDistance),
     matchPercent:  record.matchPercent  == null ? null : Number(record.matchPercent),
-    syncState:    "local-only",
+    syncState:    record.syncState || "local-only",
     waSent:       Boolean(record.waSent),  // FIX #4
   };
 }

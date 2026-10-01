@@ -18,7 +18,8 @@
       { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "X910GU", pass: "mukul@unacademy", label: "MUKUL JI" },
     ];
   </script>
-  <script src="sheets-sync.js"></script>
+  <script src="supabase-config.js"></script>
+  <script src="supabase-client.js"></script>
   <style>
     body { background: #020617; color: #f1f5f9; font-family: 'Inter', sans-serif; margin: 0; min-height: 100vh; }
     * { -webkit-tap-highlight-color: transparent; }
@@ -72,7 +73,6 @@
 
 <script>
 // ─── State ────────────────────────────────────────────────────
-const SHEETS_URL = window.SHEETS_URL || "";
 const CACHE_KEY_STUDENTS = 'manual-cache-students';
 const CACHE_KEY_ATT      = 'manual-cache-att';
 const CACHE_DATE_KEY     = 'manual-cache-date';
@@ -102,48 +102,36 @@ todayKey = getLocalDateKey(new Date());
 
 // Load from cache first, then fetch from Sheet
 async function loadData() {
-  const url = window.SHEETS_URL;
-
-  // ── Step 1: Load from localStorage cache instantly ──
+  // Step 1: instant from cache (students always; attendance only if from today)
   const cachedStudents = localStorage.getItem(CACHE_KEY_STUDENTS);
   const cachedAtt      = localStorage.getItem(CACHE_KEY_ATT);
   const cachedDate     = localStorage.getItem(CACHE_DATE_KEY);
-
   if (cachedStudents) {
     students = JSON.parse(cachedStudents);
-    // Only use cached attendance if it's from today
     attendances = (cachedDate === todayKey && cachedAtt) ? JSON.parse(cachedAtt) : [];
-    updateStats();
-    renderList("");
-    setStatus(`📦 ${students.length} students (cached) — refreshing…`);
+    updateStats(); renderList("");
+    setStatus(`${students.length} students (cached) – refreshing…`);
   }
+  if (!sb.configured) { setStatus(cachedStudents ? "Loaded from cache" : "Supabase not configured."); return; }
 
-  if (!url || url === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") {
-    setStatus(cachedStudents ? "✅ Loaded from cache" : "⚠️ Google Sheet not connected.");
-    return;
-  }
-
-  // ── Step 2: Fetch fresh from Sheet in background ──
+  // Step 2: fetch fresh (students without face data, only TODAY's attendance)
   try {
-    const [studRes, attRes] = await Promise.all([
-      fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getStudents"}))}`).then(r=>r.json()),
-      fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getAllAttendance"}))}`).then(r=>r.json()),
+    const [studRows, attRows] = await Promise.all([
+      sb.selectAll("students", "select=id,student_unique_id,name,roll,class,student_phone,parent_phone&order=name.asc"),
+      sb.selectAll("attendance", `select=*&date_key=eq.${encodeURIComponent(todayKey)}&order=ts.desc`),
     ]);
-    if (studRes.ok) {
-      students = studRes.students || [];
-      localStorage.setItem(CACHE_KEY_STUDENTS, JSON.stringify(students));
-    }
-    if (attRes.ok) {
-      attendances = attRes.records || [];
-      localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
-      localStorage.setItem(CACHE_DATE_KEY, todayKey);
-    }
+    students    = studRows.map(sb.rowToStudent);
+    attendances = attRows.map(sb.rowToAtt);
+    localStorage.setItem(CACHE_KEY_STUDENTS, JSON.stringify(students));
+    localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
+    localStorage.setItem(CACHE_DATE_KEY, todayKey);
     updateStats();
     renderList(document.getElementById('search-input').value);
-    setStatus(`✅ ${students.length} students loaded`);
+    setStatus(`${students.length} students loaded`);
     setTimeout(() => setStatus(""), 2000);
-  } catch(e) {
-    setStatus(cachedStudents ? "⚠️ Using cached data (Sheet offline)" : "❌ Failed to load.");
+  } catch (e) {
+    console.warn(e);
+    setStatus(cachedStudents ? "Using cached data (offline)" : "Failed to load.");
   }
 }
 
@@ -232,11 +220,12 @@ async function markAttendance(studentId) {
   renderList(q);
   showToast(`✅ ${student.name} marked present!`);
 
-  // Save to Sheet in background
-  const url = window.SHEETS_URL;
-  if (url && url !== "PASTE_YOUR_APPS_SCRIPT_URL_HERE") {
-    fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"saveAttendance",...record}))}`)
-      .catch(e => console.warn("Sheet sync failed:", e));
+  // Save to Supabase in background
+  if (sb.configured) {
+    sb.upsert("attendance", [sb.attToRow(record)]).catch(e => {
+      console.warn("Save failed:", e);
+      showToast("⚠️ Saved on this device only – will not sync");
+    });
   }
 
   // Send SMS in background
@@ -256,12 +245,17 @@ async function sendSms(student, record) {
   const msg = `Dear Parent, ${student.name} has marked attendance today at ${record.formattedTime}. - ${window.FACESCAN_CONFIG?.instituteName || 'Institute'}`;
 
   try {
-    await fetch(slot.url.trim().replace(/\/$/,'') + '/3rdparty/v1/messages?skipPhoneValidation=true', {
+    const resp = await fetch(slot.url.trim().replace(/\/$/,'') + '/3rdparty/v1/messages?skipPhoneValidation=true', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'Authorization':'Basic '+btoa((slot.user||'')+':'+(slot.pass||'')) },
       body: JSON.stringify({ textMessage:{text:msg}, phoneNumbers:[phone] }),
       signal: AbortSignal.timeout(8000),
     });
+    if (resp.ok || resp.status === 202) {
+      record.waSent = true;
+      localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
+      if (sb.configured) sb.patch("attendance", `id=eq.${encodeURIComponent(record.id)}`, { wa_sent: true }).catch(()=>{});
+    }
   } catch(e) { console.warn("SMS failed:", e); }
 }
 
@@ -274,21 +268,14 @@ function showToast(msg) {
 
 // Refresh attendance when user comes back to page (minimize/reopen)
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    const url = window.SHEETS_URL;
-    if (!url || url === "PASTE_YOUR_APPS_SCRIPT_URL_HERE") return;
-    // Only refresh attendance, not students (students don't change often)
-    fetch(`${url}?payload=${encodeURIComponent(JSON.stringify({action:"getAllAttendance"}))}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.ok) {
-          attendances = data.records || [];
-          localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
-          updateStats();
-          renderList(document.getElementById('search-input').value);
-        }
-      }).catch(() => {});
-  }
+  if (document.visibilityState !== 'visible' || !sb.configured) return;
+  sb.selectAll("attendance", `select=*&date_key=eq.${encodeURIComponent(todayKey)}&order=ts.desc`)
+    .then(rows => {
+      attendances = rows.map(sb.rowToAtt);
+      localStorage.setItem(CACHE_KEY_ATT, JSON.stringify(attendances));
+      updateStats();
+      renderList(document.getElementById('search-input').value);
+    }).catch(() => {});
 });
 
 // Init

@@ -24,7 +24,9 @@
     body { background: #020617; color: #f1f5f9; font-family: 'Inter', sans-serif; margin: 0; min-height: 100vh; }
     * { -webkit-tap-highlight-color: transparent; }
     button { touch-action: manipulation; user-select: none; }
-  </style>
+  @keyframes markflash { 0%{background:#10b981;transform:scale(1.02)} 100%{background:#0f172a;transform:scale(1)} }
+.mark-flash { animation: markflash 1.2s ease-out; }
+</style>
 </head>
 <body>
 
@@ -148,6 +150,9 @@ function setStatus(msg) {
 function isMarkedToday(studentId) {
   return attendances.some(a => a.studentId === studentId && a.dateKey === todayKey);
 }
+function markCountToday(studentId) {
+  return attendances.filter(a => a.studentId === studentId && a.dateKey === todayKey).length;
+}
 
 function renderList(query) {
   const el = document.getElementById('student-list');
@@ -162,20 +167,22 @@ function renderList(query) {
   }
 
   el.innerHTML = filtered.map(s => {
-    const marked = isMarkedToday(s.id);
+    const count = markCountToday(s.id);
+    const marked = count > 0;
     return `
-      <div class="flex items-center justify-between bg-slate-900 border ${marked ? 'border-emerald-500/40' : 'border-slate-700'} rounded-2xl px-4 py-3 transition-all">
+      <div data-sid="${s.id}" class="flex items-center justify-between bg-slate-900 border ${marked ? 'border-emerald-500/40' : 'border-slate-700'} rounded-2xl px-4 py-3 transition-all">
         <div>
           <div class="font-semibold text-sm ${marked ? 'text-emerald-400' : 'text-slate-100'}">${escHtml(s.name)}</div>
           <div class="text-xs text-slate-400">Roll: ${escHtml(s.roll||'-')} · ${escHtml(s.class||'-')}</div>
+          ${marked ? `<div class="text-xs text-emerald-300/80 mt-1">\u23f1 ${attendances.filter(a => a.studentId === s.id && a.dateKey === todayKey).sort((x,y)=>new Date(x.timestamp)-new Date(y.timestamp)).map(a => a.timeLabel).join(', ')}</div>` : ''}
         </div>
-        ${marked
-          ? '<span class="text-emerald-400 text-xs font-bold px-3 py-1.5 bg-emerald-500/10 rounded-xl">✅ Present</span>'
-          : `<button onclick="markAttendance('${s.id}')"
-               class="bg-sky-500 hover:bg-sky-400 active:scale-95 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all">
-               Mark
-             </button>`
-        }
+        <div class="flex items-center gap-2">
+          ${marked ? `<span class="text-emerald-400 text-xs font-bold px-3 py-1.5 bg-emerald-500/10 rounded-xl">\u2713 Present${count > 1 ? ' \u00d7' + count : ''}</span>` : ''}
+          <button onclick="markAttendance('${s.id}')"
+               class="${marked ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-sky-500 hover:bg-sky-400'} active:scale-95 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all">
+               ${marked ? 'Mark again' : 'Mark'}
+          </button>
+        </div>
       </div>`;
   }).join('');
 }
@@ -189,11 +196,14 @@ function escHtml(str) {
 async function markAttendance(studentId) {
   const student = students.find(s => s.id === studentId);
   if (!student) return;
-  if (isMarkedToday(studentId)) { showToast(`${student.name} already marked!`); return; }
+  // Repeat marks are allowed; only ignore an accidental double-tap (< 3 sec)
+  const last = attendances.filter(a => a.studentId === studentId && a.dateKey === todayKey)
+                          .reduce((m, a) => Math.max(m, new Date(a.timestamp).getTime()), 0);
+  if (Date.now() - last < 3000) { showToast(`${student.name} just marked`); return; }
 
   const now = new Date();
   const record = {
-    id:           `ATT-M-${Date.now()}`,
+    id:           `ATT-M-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
     studentId:    student.id,
     studentUniqueId: student.studentUniqueId || student.id,
     name:         student.name,
@@ -218,7 +228,10 @@ async function markAttendance(studentId) {
   updateStats();
   const q = document.getElementById('search-input').value;
   renderList(q);
-  showToast(`✅ ${student.name} marked present!`);
+  const card = document.querySelector(`[data-sid="${CSS.escape(student.id)}"]`);
+  if (card) { card.classList.add('mark-flash'); setTimeout(() => card.classList.remove('mark-flash'), 1300); }
+  const n = markCountToday(student.id);
+  showToast(`\u2713 ${student.name} marked present${n > 1 ? ' (#' + n + ')' : ''}!`);
 
   // Save to Supabase in background
   if (sb.configured) {

@@ -16,7 +16,9 @@
       };
     </script>
     <script src="supabase-config.js"></script>
+    <script src="sms-devices.js"></script>
     <script src="supabase-client.js"></script>
+    <script src="sms-service.js"></script>
     <script src="app.js" defer></script>
     <script src="supabase-sync.js" defer></script>
     <style>
@@ -128,6 +130,10 @@
                 style="display:none;"
                 class="absolute -top-1 -right-1 bg-amber-500 text-white text-[10px] font-bold w-4 h-4 rounded-full inline-flex items-center justify-center leading-none">
               </span>
+            </button>
+            <button onclick="window.open('sms-log.html','_blank')" id="tab-smslog"
+              class="px-3 py-1.5 rounded-3xl flex items-center gap-x-1 hover:bg-slate-700 transition-all whitespace-nowrap text-xs sm:text-sm">
+              <span>📨</span><span class="hidden md:inline">SMS Log</span>
             </button>
           </div>
 
@@ -664,7 +670,7 @@
                     <th class="px-4 py-3 text-left">Roll</th>
                     <th class="px-4 py-3 text-left">Class</th>
                     <th class="px-4 py-3 text-left">Profile</th>
-                    <th class="px-4 py-3 text-center">WA Sent</th>
+                    <th class="px-4 py-3 text-center">SMS Status</th>
                     <th class="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>

@@ -265,7 +265,7 @@ async function migrateFromGoogleSheets() {
     })).filter(r => r.embeddings.length);
     const counts = new Map(faceRows.map(r => [r.student_id, r.embeddings.length]));
 
-    const studRows = st.students.map(s => sb.studentToRow({ ...s, embeddingCount: counts.get(s.id) || Number(s.embeddingCount) || 0 }));
+    const studRows = dedupeBy(st.students.map(s => sb.studentToRow({ ...s, embeddingCount: counts.get(s.id) || Number(s.embeddingCount) || 0 })));
     for (let i = 0; i < studRows.length; i += 200) {
       showSyncStatus(`Students ${Math.min(i + 200, studRows.length)}/${studRows.length}`, "#6366f1");
       await sb.upsert("students", studRows.slice(i, i + 200));
@@ -274,7 +274,7 @@ async function migrateFromGoogleSheets() {
       showSyncStatus(`Face data ${Math.min(i + 10, faceRows.length)}/${faceRows.length}`, "#6366f1");
       await sb.upsert("face_data", faceRows.slice(i, i + 10), "student_id");
     }
-    const attRows = at.records.map(r => sb.attToRow(normalizeAttendance(r)));
+    const attRows = dedupeBy(at.records.map(r => sb.attToRow(normalizeAttendance(r))));
     for (let i = 0; i < attRows.length; i += 500) {
       showSyncStatus(`Attendance ${Math.min(i + 500, attRows.length)}/${attRows.length}`, "#6366f1");
       await sb.upsert("attendance", attRows.slice(i, i + 500));
@@ -293,6 +293,9 @@ function deserializeLegacyEmbeddings(str) {
   return String(str).split("|").map(p => p.split(",").map(Number)).filter(d => d.length > 10);
 }
 
+
+// Same id twice in one batch makes Postgres reject the upsert; keep the last one
+const dedupeBy = (rows, k = "id") => [...new Map(rows.map(r => [r[k], r])).values()];
 
 // ── Import from CSV files (downloaded from the old Google Sheet) ──
 function parseCSV(text) {
@@ -376,6 +379,8 @@ async function importCsvFiles(fileList) {
       s.studentUniqueId = _pick(r, stuAlias.uid) || s.id;
       return s;
     }).filter(s => s.name && s.id);
+    const stuDupes = students.length - dedupeBy(students).length;
+    const studentsU = dedupeBy(students);
 
     // Face data (group rows per student; the old sheet may have split big cells)
     const pieces = new Map();
@@ -389,7 +394,7 @@ async function importCsvFiles(fileList) {
         pieces.get(id).push(txt);
       }
     }
-    const studentIds = new Set(students.map(s => s.id));
+    const studentIds = new Set(studentsU.map(s => s.id));
     let faceRows = [], faceBad = [];
     for (const [id, ps] of pieces) {
       const vecs = parseVectors(ps);
@@ -398,7 +403,7 @@ async function importCsvFiles(fileList) {
       faceRows.push({ student_id: id, embeddings: toEmbeddings(vecs), updated_on: new Date().toISOString() });
     }
     const counts = new Map(faceRows.map(r => [r.student_id, r.embeddings.length]));
-    students.forEach(s => { s.embeddingCount = counts.get(s.id) || 0; });
+    studentsU.forEach(s => { s.embeddingCount = counts.get(s.id) || 0; });
 
     // Attendance
     const attAlias = { id: ["id", "attendanceid", "recordid"], studentId: ["studentid"], studentUniqueId: ["studentuniqueid"],
@@ -417,12 +422,14 @@ async function importCsvFiles(fileList) {
       const n = normalizeAttendance(o);
       return n && sb.attToRow(n);
     }).filter(r => r && r.student_id && r.date_key);
+    const attDupes = attRows.length - dedupeBy(attRows).length;
+    const attU = dedupeBy(attRows);
 
-    const summary = `Students: ${students.length}\nFace data: ${faceRows.length} students (${faceRows.reduce((a, r) => a + r.embeddings.length, 0)} face samples)\nAttendance: ${attRows.length}` +
+    const summary = `Students: ${studentsU.length}${stuDupes ? ` (${stuDupes} duplicate rows merged)` : ""}\nFace data: ${faceRows.length} students (${faceRows.reduce((a, r) => a + r.embeddings.length, 0)} face samples)\nAttendance: ${attU.length}${attDupes ? ` (${attDupes} duplicates merged)` : ""}` +
       (faceBad.length ? `\n\n⚠️ Face data unreadable for ${faceBad.length} student(s): ${faceBad.slice(0, 5).join(", ")}${faceBad.length > 5 ? "…" : ""}` : "");
     if (!confirm(`Import this into Supabase?\n\n${summary}`)) return;
 
-    const stuRows = students.map(sb.studentToRow);
+    const stuRows = studentsU.map(sb.studentToRow);
     for (let i = 0; i < stuRows.length; i += 200) {
       showSyncStatus(`Students ${Math.min(i + 200, stuRows.length)}/${stuRows.length}`, "#6366f1");
       await sb.upsert("students", stuRows.slice(i, i + 200));
@@ -431,9 +438,9 @@ async function importCsvFiles(fileList) {
       showSyncStatus(`Face data ${Math.min(i + 10, faceRows.length)}/${faceRows.length}`, "#6366f1");
       await sb.upsert("face_data", faceRows.slice(i, i + 10), "student_id");
     }
-    for (let i = 0; i < attRows.length; i += 500) {
-      showSyncStatus(`Attendance ${Math.min(i + 500, attRows.length)}/${attRows.length}`, "#6366f1");
-      await sb.upsert("attendance", attRows.slice(i, i + 500));
+    for (let i = 0; i < attU.length; i += 500) {
+      showSyncStatus(`Attendance ${Math.min(i + 500, attU.length)}/${attU.length}`, "#6366f1");
+      await sb.upsert("attendance", attU.slice(i, i + 500));
     }
     localStorage.removeItem(FACES_SINCE_KEY);
     await sb.faceCache.clear();

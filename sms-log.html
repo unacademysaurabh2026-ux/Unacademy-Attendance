@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FaceScan · SMS Log</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="supabase-config.js"></script>
+  <script src="sms-devices.js"></script>
+  <script src="supabase-client.js"></script>
+  <script src="sms-service.js"></script>
+  <style>
+    body { background:#020617; color:#f1f5f9; font-family: Inter, system-ui, sans-serif; margin:0; }
+    th { position: sticky; top: 0; background:#0f172a; z-index:1; }
+    .chip { border-radius: 9999px; padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; border:1px solid transparent; }
+    select, input { background:#0f172a; border:1px solid #334155; border-radius:12px; padding:8px 12px; color:#f1f5f9; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-50">
+    <div class="flex items-center gap-3">
+      <button onclick="window.close()" class="text-slate-400 hover:text-white text-sm px-3 py-1.5 bg-slate-800 rounded-xl">✕ Close</button>
+      <span class="font-bold">📨 SMS Log</span>
+    </div>
+    <div class="flex gap-2">
+      <button id="btn-check" class="text-xs font-semibold px-3 py-2 rounded-xl bg-sky-500/15 text-sky-300">🔄 Check pending</button>
+      <button id="btn-reload" class="text-xs font-semibold px-3 py-2 rounded-xl bg-emerald-500/15 text-emerald-300">⟳ Reload</button>
+    </div>
+  </div>
+
+  <div class="max-w-7xl mx-auto p-4 space-y-4">
+    <!-- Device usage -->
+    <div>
+      <div class="text-xs text-slate-400 mb-2">Today's SMS per device (shared across all devices &amp; browsers)</div>
+      <div id="usage" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+    </div>
+
+    <!-- Filters -->
+    <div class="flex flex-wrap gap-2 items-center">
+      <select id="f-range">
+        <option value="today">Today</option>
+        <option value="yesterday">Yesterday</option>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="date">Pick a date…</option>
+      </select>
+      <input id="f-date" type="date" class="hidden" />
+      <select id="f-device"><option value="">All devices</option></select>
+      <input id="f-search" type="search" placeholder="Search student, roll, class, phone…" class="flex-1 min-w-[200px]" />
+    </div>
+    <div id="chips" class="flex flex-wrap gap-2"></div>
+
+    <div class="overflow-auto rounded-2xl border border-slate-800" style="max-height:70vh">
+      <table class="w-full text-sm">
+        <thead class="text-xs text-slate-400">
+          <tr>
+            <th class="px-3 py-3 text-left">Time</th>
+            <th class="px-3 py-3 text-left">Student</th>
+            <th class="px-3 py-3 text-left">Phone</th>
+            <th class="px-3 py-3 text-left">Device</th>
+            <th class="px-3 py-3 text-left">Status</th>
+            <th class="px-3 py-3 text-left">Details</th>
+            <th class="px-3 py-3 text-right">Action</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div id="count" class="text-xs text-slate-500"></div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const fmt = v => v ? new Date(v).toLocaleString("en-IN", { timeZone:"Asia/Kolkata", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit", second:"2-digit" }) : "";
+const fmtT = v => v ? new Date(v).toLocaleTimeString("en-IN", { timeZone:"Asia/Kolkata", hour:"2-digit", minute:"2-digit", second:"2-digit" }) : "";
+
+const eff = r => SmsService.isStuck(r) ? "stuck" : r.status;
+const BADGE = {
+  stuck:     ["⚠ Stuck",      "bg-orange-500/20 text-orange-300"],
+  delivered: ["✓✓ Delivered", "bg-emerald-500/15 text-emerald-300"],
+  sent:      ["✓ Sent",       "bg-sky-500/15 text-sky-300"],
+  pending:   ["⏳ Pending",   "bg-amber-500/15 text-amber-300"],
+  processed: ["⏳ Sending",   "bg-amber-500/15 text-amber-300"],
+  queued:    ["⏳ Queued",    "bg-amber-500/15 text-amber-300"],
+  failed:    ["✕ Failed",     "bg-red-500/15 text-red-300"],
+  unknown:   ["? Unknown",    "bg-amber-500/15 text-amber-300"],
+  cancelled: ["✕ Cancelled",  "bg-slate-500/15 text-slate-300"],
+};
+let rows = [];
+let statusFilter = "";
+
+function dayStart(day) { return new Date(day + "T00:00:00+05:30"); }
+function rangeBounds() {
+  const r = $("f-range").value, today = SmsService.istDay();
+  const addDays = (day, n) => SmsService.istDay(new Date(dayStart(day).getTime() + n * 86400000));
+  if (r === "today") return [dayStart(today), null];
+  if (r === "yesterday") return [dayStart(addDays(today, -1)), dayStart(today)];
+  if (r === "date") { const d = $("f-date").value || today; return [dayStart(d), dayStart(addDays(d, 1))]; }
+  return [new Date(Date.now() - Number(r) * 86400000), null];
+}
+
+async function load() {
+  if (!sb.configured) { $("count").textContent = "Supabase is not configured."; return; }
+  $("count").textContent = "Loading…";
+  try {
+    const [from, to] = rangeBounds();
+    let q = `select=*&created_at=gte.${encodeURIComponent(from.toISOString())}&order=created_at.desc`;
+    if (to) q += `&created_at=lt.${encodeURIComponent(to.toISOString())}`;
+    rows = await sb.selectAll("sms_log", q);
+    rows.forEach(r => SmsService.ingest(r));
+    // use the cached (shared) objects so status refreshes show up here
+    render();
+  } catch (e) { $("count").textContent = "Could not load: " + e.message; }
+  loadUsage();
+}
+
+async function loadUsage() {
+  await SmsService.refreshUsage();
+  const used = window.SMS_USAGE || [];
+  $("usage").innerHTML = SmsService.devices().map((d, i) => {
+    const n = used[i] || 0, pct = Math.min(100, n);
+    return `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-3">
+      <div class="flex justify-between text-xs"><span class="font-semibold">${esc(d.label)}</span><span class="text-slate-400">${n}/${SmsService.LIMIT}</span></div>
+      <div class="h-1.5 bg-slate-800 rounded-full mt-2"><div class="h-1.5 rounded-full ${n >= SmsService.LIMIT ? "bg-red-400" : "bg-sky-400"}" style="width:${pct}%"></div></div>
+    </div>`;
+  }).join("");
+}
+
+function filtered() {
+  const q = $("f-search").value.trim().toLowerCase(), dv = $("f-device").value;
+  return rows.filter(r => {
+    if (statusFilter && eff(r) !== statusFilter) return false;
+    if (dv !== "" && String(r.device_index) !== dv) return false;
+    if (q && !`${r.student_name} ${r.roll} ${r.class} ${r.phone}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function details(r) {
+  const parts = [];
+  if (r.sent_at) parts.push("Sent " + fmtT(r.sent_at));
+  if (r.delivered_at) parts.push("Delivered " + fmtT(r.delivered_at));
+  if (r.failure_reason) parts.push(`<span class="text-red-300">${esc(r.failure_reason)}</span>`);
+  if (SmsService.isStuck(r)) parts.push(`<span class="text-orange-300">Waiting ${Math.round((Date.now() - new Date(r.created_at)) / 60000)} min — phone may be off / no internet / flight mode. It will be sent when the phone is back (SMS Gate waits up to 24h).</span>`);
+  if (r.retry_of) parts.push(`<span class="text-violet-300">↻ Auto-retry of an earlier failed SMS</span>`);
+  else if (r.retried) parts.push(`<span class="text-violet-300">↻ Auto-retried on another device</span>`);
+  if (r.status === "sent" && !r.delivered_at && Date.now() - new Date(r.created_at) > 10 * 60000)
+    parts.push(`<span class="text-slate-500">No delivery report yet (phone/carrier may not send one)</span>`);
+  if (r.source && r.source !== "auto") parts.push(`<span class="text-slate-500">(${esc(r.source)})</span>`);
+  return parts.join("<br>");
+}
+
+function render() {
+  const list = filtered();
+  // chips (counts ignore the status filter itself)
+  const base = rows.filter(r => {
+    const q = $("f-search").value.trim().toLowerCase(), dv = $("f-device").value;
+    if (dv !== "" && String(r.device_index) !== dv) return false;
+    return !q || `${r.student_name} ${r.roll} ${r.class} ${r.phone}`.toLowerCase().includes(q);
+  });
+  const cnt = {}; base.forEach(r => cnt[eff(r)] = (cnt[eff(r)] || 0) + 1);
+  const chip = (key, label, cls) => `<button class="chip ${cls} ${statusFilter === key ? "border-white" : ""}" data-s="${key}">${label} ${key ? (cnt[key] || 0) : base.length}</button>`;
+  $("chips").innerHTML =
+    chip("", "All", "bg-slate-800") + chip("delivered", "✓✓ Delivered", "bg-emerald-500/15 text-emerald-300") +
+    chip("sent", "✓ Sent", "bg-sky-500/15 text-sky-300") + chip("pending", "⏳ Pending", "bg-amber-500/15 text-amber-300") +
+    chip("stuck", "⚠ Stuck", "bg-orange-500/20 text-orange-300") + chip("failed", "✕ Failed", "bg-red-500/15 text-red-300") + chip("unknown", "? Unknown", "bg-amber-500/15 text-amber-300");
+  $("chips").querySelectorAll("button").forEach(b => b.onclick = () => { statusFilter = b.dataset.s; render(); });
+
+  $("rows").innerHTML = list.map(r => {
+    const [label, cls] = BADGE[eff(r)] || [r.status, "bg-slate-500/15 text-slate-300"];
+    const canResend = (r.status === "failed" && !r.retried) || r.status === "unknown" || SmsService.isStuck(r);
+    const canCheck = r.gateway_message_id && !["failed", "cancelled"].includes(r.status);
+    return `<tr class="border-t border-slate-800 hover:bg-slate-900/60 align-top" title="${esc(r.message)}">
+      <td class="px-3 py-3 text-xs whitespace-nowrap">${fmt(r.created_at)}</td>
+      <td class="px-3 py-3"><div class="font-medium">${esc(r.student_name)}</div><div class="text-xs text-slate-500">${esc(r.roll)} · ${esc(r.class)}</div></td>
+      <td class="px-3 py-3 text-xs whitespace-nowrap">${esc(r.phone)}</td>
+      <td class="px-3 py-3 text-xs">${esc(r.device_label || "—")}</td>
+      <td class="px-3 py-3"><span class="inline-block rounded-full px-2.5 py-1 text-xs font-semibold ${cls}">${label}</span></td>
+      <td class="px-3 py-3 text-xs text-slate-300">${details(r)}</td>
+      <td class="px-3 py-3 text-right whitespace-nowrap">
+        ${canCheck ? `<button data-check="${esc(r.id)}" class="text-xs px-3 py-1.5 rounded-xl bg-sky-500/15 text-sky-300 mr-1">Check</button>` : ""}
+        ${canResend ? `<button data-resend="${esc(r.id)}" class="text-xs px-3 py-1.5 rounded-xl bg-amber-500/15 text-amber-300">Resend</button>` : ""}
+      </td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="text-center text-slate-500 py-10">No SMS found for these filters.</td></tr>`;
+  $("count").textContent = `${list.length} of ${rows.length} SMS`;
+
+  $("rows").querySelectorAll("[data-check]").forEach(b => b.onclick = async () => {
+    b.textContent = "…"; const r = rows.find(x => x.id === b.dataset.check);
+    try { await SmsService.refreshStatus(r); } catch (e) { alert("Could not check: " + e.message); }
+    render();
+  });
+  $("rows").querySelectorAll("[data-resend]").forEach(b => b.onclick = async () => {
+    const r = rows.find(x => x.id === b.dataset.resend);
+    if (!confirm(`Send this SMS again to ${r.student_name} (${r.phone})?` + (r.status === "failed" ? "" : "\n\nNote: the first SMS may still be sent when the phone comes back, so the parent could get two."))) return;
+    b.textContent = "Sending…"; b.disabled = true;
+    await SmsService.resend(r); await load();
+  });
+}
+
+// device filter options
+SmsService.devices().forEach((d, i) => { const o = document.createElement("option"); o.value = i; o.textContent = d.label; $("f-device").appendChild(o); });
+$("f-range").onchange = () => { $("f-date").classList.toggle("hidden", $("f-range").value !== "date"); load(); };
+$("f-date").onchange = load;
+$("f-device").onchange = render;
+let st; $("f-search").oninput = () => { clearTimeout(st); st = setTimeout(render, 150); };
+$("btn-reload").onclick = load;
+$("btn-check").onclick = async () => {
+  const b = $("btn-check"); b.textContent = "Checking…";
+  await SmsService.refreshPending(100); b.textContent = "🔄 Check pending"; render();
+};
+SmsService.onChange(render);
+
+// ?q=Student%20Name  (opened from the Records table)
+const qs = new URLSearchParams(location.search);
+if (qs.get("q")) { $("f-search").value = qs.get("q"); $("f-range").value = "30"; }
+load().then(() => SmsService.refreshPending(30).then(render));
+setInterval(() => SmsService.refreshPending(30), 60000);
+</script>
+</body>
+</html>

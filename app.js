@@ -4,12 +4,7 @@
 // ============================================================
 
 // ─── Hardcoded SMS Gateway Devices ───────────────────────────
-const HARDCODED_SMS_DEVICES = [
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "GGPYS2", pass: "saurabh@unacademy", label: "SAURABH" },
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "FDRELK", pass: "mukul@unacademy", label: "MUKUL SIR" },
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "XY9PLS", pass: "deepak@unacademy", label: "DEEPAK" },
-  { url: "https://sms-proxy.unacademysaurabh2026.workers.dev/", user: "QWJN5I", pass: "puneet@unacademy", label: "PUNEET SIR" },
-];
+const HARDCODED_SMS_DEVICES = window.SMS_DEVICES || [];   // edit devices in sms-devices.js
 
 // ─── Storage Keys ────────────────────────────────────────────
 const STORAGE_KEYS = {
@@ -2027,7 +2022,7 @@ function renderSmsSlots() {
         <ul class="mt-2 space-y-1 text-slate-300">
           ${HARDCODED_SMS_DEVICES.map((d, i) => `<li>📱 ${d.label || 'Device ' + (i+1)}: ${getSmsCountTodayForSlot(i)} SMS today</li>`).join('')}
         </ul>
-        <p class="mt-2 text-xs text-slate-400">To change devices, edit HARDCODED_SMS_DEVICES in app.js on GitHub.</p>
+        <p class="mt-2 text-xs text-slate-400">Count is shared across all devices (Supabase). To change devices, edit sms-devices.js on GitHub.</p>
       </div>`;
     const addBtn = document.getElementById('add-sms-slot-btn');
     if (addBtn) addBtn.style.display = 'none';
@@ -2112,12 +2107,16 @@ function getActiveSlotByCount() {
 function getActiveSlot() { return getActiveSlotByCount(); }
 
 function getSmsCountTodayForSlot(slotIdx) {
+  if (window.SMS_USAGE) return window.SMS_USAGE[slotIdx] || 0;   // shared counter from Supabase
   const total = getTodayAttendanceCount();
   const start = slotIdx * SMS_DAILY_LIMIT;
   return Math.max(0, Math.min(total - start, SMS_DAILY_LIMIT));
 }
 
-function getSmsCountToday() { return getTodayAttendanceCount(); }
+function getSmsCountToday() {
+  if (window.SMS_USAGE) return window.SMS_USAGE.reduce((a, b) => a + (b || 0), 0);
+  return getTodayAttendanceCount();
+}
 
 // No-op — count comes from attendance sheet now
 async function incrementSmsCountForSlot(slotIdx) {}
@@ -2139,6 +2138,8 @@ function loadSmsGatewayUrl() {
 function updateSmsUsageDisplay() {
   const el = document.getElementById('sms-used-today');
   if (el) el.textContent = getSmsCountToday();
+  const lim = document.getElementById('sms-total-limit');
+  if (lim) lim.textContent = SMS_DAILY_LIMIT * Math.max(1, getSmsSlots().length);
   renderSmsSlots();
 }
 
@@ -2146,7 +2147,7 @@ function showSmsSplitPanel() {
   const today = getLocalDateKey(new Date());
   const pending = state.attendances.filter(a => a.dateKey === today && !a.waSent && a.parentPhone);
   const smsSentToday = getSmsCountToday();
-  const smsRemaining = Math.max(0, SMS_DAILY_LIMIT - smsSentToday);
+  const smsRemaining = Math.max(0, SMS_DAILY_LIMIT * Math.max(1, getSmsSlots().length) - smsSentToday);
   const smsList = pending.slice(0, smsRemaining);
   const waList  = pending.slice(smsRemaining);
 
@@ -2163,7 +2164,7 @@ function showSmsSplitPanel() {
         <div style="flex:1;background:#0f172a;border-radius:12px;padding:16px;text-align:center;">
           <div style="color:#10b981;font-size:24px;font-weight:700;">${smsList.length}</div>
           <div style="color:#94a3b8;font-size:12px;margin-top:4px;">📱 Via SMS</div>
-          <div style="color:#475569;font-size:11px;">${smsSentToday} sent today / ${SMS_DAILY_LIMIT} limit</div>
+          <div style="color:#475569;font-size:11px;">${smsSentToday} sent today / ${SMS_DAILY_LIMIT * Math.max(1, getSmsSlots().length)} limit</div>
         </div>
         <div style="flex:1;background:#0f172a;border-radius:12px;padding:16px;text-align:center;">
           <div style="color:#25d366;font-size:24px;font-weight:700;">${waList.length}</div>
@@ -2209,74 +2210,35 @@ function showSmsSplitPanel() {
 
 // ─── Auto SMS on attendance mark ─────────────────────────────
 async function autoSendSms(record) {
-  if (!record.parentPhone) return;
   if (record.waSent) return;
-
-  const slots = getSmsSlots();
-  if (!slots.length) return;
-
-  let formattedPhone = record.parentPhone.replace(/\D/g, '');
-  if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
-  else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
-
+  if (typeof SmsService === 'undefined') return;
   const msg = 'Dear Parent, ' + record.name + ' has marked attendance today at ' + record.formattedTime + '. - ' + (state.settings.instituteName || 'Institute');
-
-  for (let i = 0; i < slots.length; i++) {
-    const slot = slots[i];
-    if (!slot.url) continue;
-    if (getSmsCountTodayForSlot(i) >= SMS_DAILY_LIMIT) continue;
-    const baseUrl = slot.url.trim().replace(/\/$/, '');
-    try {
-      const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa((slot.user||'') + ':' + (slot.pass||'')) },
-        body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
-        signal: AbortSignal.timeout(8000),
-      });
-      if (resp.ok || resp.status === 202) {
-        markWaSent(record.id);
-        console.log('Auto SMS sent via Device ' + (i+1) + ' to', record.name);
-        return;
-      } else {
-        console.warn('Device ' + (i+1) + ' failed (' + resp.status + ') — trying next');
-      }
-    } catch(e) {
-      console.warn('Device ' + (i+1) + ' error:', e.message, '— trying next');
-    }
-  }
-  console.warn('All SMS slots failed for', record.name);
+  await SmsService.send({
+    attendanceId: record.id, studentId: record.studentId, name: record.name, roll: record.roll, class: record.class,
+    phone: record.parentPhone, message: msg, source: 'auto',
+    onAccepted: () => markWaSent(record.id),
+  });
 }
 
 async function sendSmsAlert(recordId, phone, name, time, btn) {
-  const activeSlotInfo = getActiveSlot();
-  const msg = 'Dear Parent, ' + name + ' has marked attendance today at ' + time + '. - Unacademy Gwalior';
-  let formattedPhone = phone.replace(/\D/g, '');
-  if (formattedPhone.length === 10) formattedPhone = '+91' + formattedPhone;
-  else if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone;
-
-  if (activeSlotInfo) {
-    const { slot, idx } = activeSlotInfo;
-    const baseUrl = slot.url.trim().replace(/\/$/, '');
-    try {
-      const resp = await fetch(baseUrl + '/3rdparty/v1/messages?skipPhoneValidation=true', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa((slot.user||'') + ':' + (slot.pass||'')) },
-        body: JSON.stringify({ textMessage: { text: msg }, phoneNumbers: [formattedPhone] }),
-      });
-      if (resp.ok || resp.status === 202) {
-        incrementSmsCountForSlot(idx);
-      } else {
-        console.error('SMS send failed:', resp.status);
-      }
-    } catch(e) { console.error('SMS send error:', e); }
-  } else {
+  const rec = state.attendances.find(a => a.id === recordId) || {};
+  const msg = 'Dear Parent, ' + name + ' has marked attendance today at ' + time + '. - ' + (state.settings.instituteName || 'Unacademy Gwalior');
+  if (typeof SmsService === 'undefined' || !SmsService.devices().length) {
     window.open('sms:' + phone + '?body=' + encodeURIComponent(msg), '_blank');
+    markWaSent(recordId);
+    btn.textContent = '\u2713 Opened'; btn.disabled = true; return;
   }
+  btn.textContent = 'Sending\u2026'; btn.disabled = true;
+  const log = await SmsService.send({
+    attendanceId: recordId, studentId: rec.studentId, name, roll: rec.roll, class: rec.class,
+    phone, message: msg, source: 'manual', onAccepted: () => markWaSent(recordId),
+  });
+  const ok = log && !['failed', 'unknown'].includes(log.status);
+  btn.textContent = ok ? '\u2713 Sent' : '\u2715 Failed';
+  btn.title = ok ? '' : (log && log.failure_reason) || '';
+  btn.style.background = ok ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.25)';
+  btn.disabled = ok;
   updateSmsUsageDisplay();
-  markWaSent(recordId);
-  btn.textContent = '✅ Sent';
-  btn.disabled = true;
-  btn.style.background = 'rgba(16,185,129,0.3)';
 }
 
 function sendWaFromSplit(recordId, btn) {
@@ -2421,6 +2383,32 @@ function resetAttendanceFilters() {
     if (el) el.value = id === 'att-sort' ? 'newest' : '';
   });
   renderAttendanceTable();
+}
+
+function smsStatusBadge(record) {
+  const log = (typeof SmsService !== 'undefined') ? SmsService.latestForAttendance(record.id) : null;
+  if (!log) {
+    return record.waSent
+      ? `<span class="text-emerald-400 text-xs font-semibold">\u2713 Sent</span>`
+      : `<span class="text-slate-500 text-xs">Not sent</span>`;
+  }
+  const map = {
+    delivered: ['\u2713\u2713 Delivered', 'text-emerald-400'], sent: ['\u2713 Sent', 'text-sky-400'],
+    pending: ['\u23f3 Pending', 'text-amber-400'], processed: ['\u23f3 Sending', 'text-amber-400'],
+    queued: ['\u23f3 Queued', 'text-amber-400'], failed: ['\u2715 Failed', 'text-red-400'],
+    unknown: ['? Unknown', 'text-amber-400'], cancelled: ['\u2715 Cancelled', 'text-slate-400'],
+  };
+  const stuck = SmsService.isStuck(log);
+  const [label, cls] = stuck ? ['\u26a0 Stuck', 'text-orange-400'] : (map[log.status] || [log.status, 'text-slate-400']);
+  const tip = [log.device_label && 'Device: ' + log.device_label,
+    log.sent_at && 'Sent: ' + new Date(log.sent_at).toLocaleTimeString(),
+    log.delivered_at && 'Delivered: ' + new Date(log.delivered_at).toLocaleTimeString(),
+    log.failure_reason && 'Reason: ' + log.failure_reason,
+    stuck && 'Waiting for the phone (off / no internet / flight mode)',
+    log.retry_of && 'Auto-retry on another device'].filter(Boolean).join(' | ');
+  return `<a href="sms-log.html?q=${encodeURIComponent(record.name || '')}" target="_blank" title="${escapeHtml(tip)}" class="${cls} text-xs font-semibold no-underline">${label}</a>` +
+    (log.device_label ? `<div class="text-[10px] text-slate-500">${escapeHtml(log.device_label)}</div>` : '') +
+    (log.status === 'failed' && log.failure_reason ? `<div class="text-[10px] text-red-300/80 max-w-[140px] mx-auto truncate" title="${escapeHtml(log.failure_reason)}">${escapeHtml(log.failure_reason)}</div>` : '');
 }
 
 function renderAttendanceTable() {
@@ -3941,4 +3929,17 @@ function playSound(type) {
       });
     }
   } catch (e) { /* silent */ }
+}
+
+
+// Re-draw SMS status badges when statuses change (debounced)
+if (typeof SmsService !== 'undefined') {
+  let _smsRedrawTimer = null;
+  SmsService.onChange(() => {
+    clearTimeout(_smsRedrawTimer);
+    _smsRedrawTimer = setTimeout(() => {
+      const sec = document.getElementById('section-records');
+      if (sec && !sec.classList.contains('hidden') && dom.attendanceTableBody && !dom.attendanceListView?.classList.contains('hidden')) renderAttendanceTable();
+    }, 1500);
+  });
 }

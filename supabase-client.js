@@ -147,3 +147,4 @@
   window.sb = { configured, req, selectAll, upsert, patch, del,
                 studentToRow, rowToStudent, attToRow, rowToAtt, faceCache };
 })();
+ 

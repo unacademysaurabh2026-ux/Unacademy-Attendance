@@ -20,7 +20,7 @@
   background: linear-gradient(90deg, #0ea5e9, #3b82f6);
   border-radius: 20px;
   overflow: hidden;
-  box-shadow: 0 25px 50px -12px rgb(14 165 233 / 0.55);
+  box-shadow: 0 25px 50px -12px rgba(43, 84, 102, 0.55);
 }
 
 /* ── Scan overlay animation ── */

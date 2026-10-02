@@ -15,7 +15,7 @@
     if (CFG.anonKey.startsWith("eyJ")) h.Authorization = "Bearer " + CFG.anonKey;
     return Object.assign(h, extra || {});
   }
- 
+
   async function req(method, path, body, extraHeaders, timeoutMs = 30000) {
     if (!configured) throw new Error("Supabase not configured (edit supabase-config.js)");
     const ctrl = new AbortController();

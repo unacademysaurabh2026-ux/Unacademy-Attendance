@@ -117,11 +117,15 @@ async function load() {
 
 async function loadUsage() {
   await SmsService.refreshUsage();
+  await SmsService.refreshDeviceInfo();
+  const bad = new Set(SmsService.evaluateHealth().map(a => a.idx));
+  const info = SmsService.deviceInfo();
   const used = window.SMS_USAGE || [];
   $("usage").innerHTML = SmsService.devices().map((d, i) => {
     const n = used[i] || 0, pct = Math.min(100, n);
     return `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-3">
       <div class="flex justify-between text-xs"><span class="font-semibold">${esc(d.label)}</span><span class="text-slate-400">${n}/${SmsService.LIMIT}</span></div>
+      <div class="text-[11px] mt-1 ${bad.has(i) ? "text-red-300" : "text-slate-500"}">${bad.has(i) ? "⚠ failing — check phone" : (info[i] ? "last seen " + Math.round((Date.now() - new Date(info[i].lastSeen)) / 60000) + " min ago" : "")}</div>
       <div class="h-1.5 bg-slate-800 rounded-full mt-2"><div class="h-1.5 rounded-full ${n >= SmsService.LIMIT ? "bg-red-400" : "bg-sky-400"}" style="width:${pct}%"></div></div>
     </div>`;
   }).join("");

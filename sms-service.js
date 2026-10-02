@@ -141,7 +141,8 @@
     const r = await fetch(`${base(dev)}/3rdparty/v1/messages/${enc(log.gateway_message_id)}`, {
       headers: { Authorization: authHeader(dev) }, signal: AbortSignal.timeout(15000),
     });
-    if (!r.ok) return log;
+    if (!r.ok) { log._chkErr = "HTTP " + r.status; throw new Error("Status check failed: HTTP " + r.status); }
+    log._chkErr = null;
     const d = await r.json();
     const st = String(d.state || "").toLowerCase();
     if (!st) return log;
@@ -304,15 +305,16 @@
   }
   function checkAlerts() {
     const sn = snoozed(), now = Date.now();
-    const all = [...evaluateHealth(), ...offlineAlerts()];
+    const all = evaluateHealth();      // (lastSeen is NOT used for alerts: it is only refreshed every ~15+ min by the phone)
     const visible = all.filter(a => !(sn[a.key] && sn[a.key] > now));
-    renderBar(visible);
+    const ui = !window.SMS_NO_ALERT_UI;                                  // scan.html (tablet) shows no alerts
+    if (ui) renderBar(visible);
     const keys = new Set(all.map(a => a.key));
     for (const k of [...shown]) if (!keys.has(k)) shown.delete(k);       // resolved -> will alert again if it returns
     for (const a of visible) {
       if (shown.has(a.key)) continue;
-      shown.add(a.key); beep();
-      try { if (window.Notification && Notification.permission === "granted") new Notification("⚠ SMS device problem", { body: alertText(a) }); } catch (_) {}
+      shown.add(a.key); if (ui) beep();
+      try { if (ui && window.Notification && Notification.permission === "granted") new Notification("⚠ SMS device problem", { body: alertText(a) }); } catch (_) {}
       if (a.type === "failing") sendAlertSms(a).catch(() => {});
     }
   }

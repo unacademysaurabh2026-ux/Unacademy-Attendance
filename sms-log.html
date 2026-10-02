@@ -125,7 +125,7 @@ async function loadUsage() {
     const n = used[i] || 0, pct = Math.min(100, n);
     return `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-3">
       <div class="flex justify-between text-xs"><span class="font-semibold">${esc(d.label)}</span><span class="text-slate-400">${n}/${SmsService.LIMIT}</span></div>
-      <div class="text-[11px] mt-1 ${bad.has(i) ? "text-red-300" : "text-slate-500"}">${bad.has(i) ? "⚠ failing — check phone" : (info[i] ? "last seen " + Math.round((Date.now() - new Date(info[i].lastSeen)) / 60000) + " min ago" : "")}</div>
+      <div class="text-[11px] mt-1 ${bad.has(i) ? "text-red-300" : "text-slate-500"}">${bad.has(i) ? "⚠ failing — check phone" : (info[i] ? "phone last synced " + Math.round((Date.now() - new Date(info[i].lastSeen)) / 60000) + " min ago" : "")}</div>
       <div class="h-1.5 bg-slate-800 rounded-full mt-2"><div class="h-1.5 rounded-full ${n >= SmsService.LIMIT ? "bg-red-400" : "bg-sky-400"}" style="width:${pct}%"></div></div>
     </div>`;
   }).join("");
@@ -151,6 +151,8 @@ function details(r) {
   else if (r.retried) parts.push(`<span class="text-violet-300">↻ Auto-retried on another device</span>`);
   if (r.status === "sent" && !r.delivered_at && Date.now() - new Date(r.created_at) > 10 * 60000)
     parts.push(`<span class="text-slate-500">No delivery report yet (phone/carrier may not send one)</span>`);
+  if (r._chkErr) parts.push(`<span class="text-orange-300">Status check failed (${esc(r._chkErr)})</span>`);
+  else if (r.last_checked_at && !["delivered", "failed"].includes(r.status)) parts.push(`<span class="text-slate-500">Checked ${fmtT(r.last_checked_at)}: gateway says “${esc(r.status)}”</span>`);
   if (r.source && r.source !== "auto") parts.push(`<span class="text-slate-500">(${esc(r.source)})</span>`);
   return parts.join("<br>");
 }
@@ -191,7 +193,7 @@ function render() {
 
   $("rows").querySelectorAll("[data-check]").forEach(b => b.onclick = async () => {
     b.textContent = "…"; const r = rows.find(x => x.id === b.dataset.check);
-    try { await SmsService.refreshStatus(r); } catch (e) { alert("Could not check: " + e.message); }
+    try { await SmsService.refreshStatus(r); } catch (e) { r._chkErr = e.message.replace("Status check failed: ", ""); alert("Could not check: " + e.message); }
     render();
   });
   $("rows").querySelectorAll("[data-resend]").forEach(b => b.onclick = async () => {

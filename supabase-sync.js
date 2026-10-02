@@ -533,4 +533,3 @@ document.addEventListener("DOMContentLoaded", () => {
   })();
   _bootPromise.then(() => loadFromSupabase());
 });
- 

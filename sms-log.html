@@ -135,7 +135,7 @@ function filtered() {
   const q = $("f-search").value.trim().toLowerCase(), dv = $("f-device").value;
   return rows.filter(r => {
     if (statusFilter && eff(r) !== statusFilter) return false;
-    if (dv !== "" && String(r.device_index) !== dv) return false;
+    if (dv !== "" && SmsService.logKey(r) !== dv) return false;
     if (q && !`${r.student_name} ${r.roll} ${r.class} ${r.phone}`.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -163,7 +163,7 @@ function render() {
   // chips (counts ignore the status filter itself)
   const base = rows.filter(r => {
     const q = $("f-search").value.trim().toLowerCase(), dv = $("f-device").value;
-    if (dv !== "" && String(r.device_index) !== dv) return false;
+    if (dv !== "" && SmsService.logKey(r) !== dv) return false;
     return !q || `${r.student_name} ${r.roll} ${r.class} ${r.phone}`.toLowerCase().includes(q);
   });
   const cnt = {}; base.forEach(r => cnt[eff(r)] = (cnt[eff(r)] || 0) + 1);
@@ -206,7 +206,7 @@ function render() {
 }
 
 // device filter options
-SmsService.devices().forEach((d, i) => { const o = document.createElement("option"); o.value = i; o.textContent = d.label; $("f-device").appendChild(o); });
+SmsService.devices().forEach((d, i) => { const o = document.createElement("option"); o.value = d.user; o.textContent = d.label; $("f-device").appendChild(o); });
 $("f-range").onchange = () => { $("f-date").classList.toggle("hidden", $("f-range").value !== "date"); load(); };
 $("f-date").onchange = load;
 $("f-device").onchange = render;

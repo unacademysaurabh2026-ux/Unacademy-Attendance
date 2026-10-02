@@ -13,6 +13,14 @@
   const nowIso = () => new Date().toISOString();
   const istDay = (d = new Date()) => d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const rand = () => Math.random().toString(36).slice(2, 7);
+  // A device is identified by its gateway login (user), NOT by its position in the list,
+  // so reordering / adding / removing devices never mixes up counts or status checks.
+  const keyOf = d => d.user;
+  const devByKey = k => devices().find(d => keyOf(d) === k);
+  const logKey = l => l.device_key
+    || (devices().find(d => d.label === l.device_label) || {}).user
+    || (l.device_index != null && devices()[l.device_index] ? keyOf(devices()[l.device_index]) : null);
+  const findDevice = l => devByKey(logKey(l));
 
   const cache = { logs: new Map(), byAtt: new Map() };
   const inflight = new Set();
@@ -77,17 +85,19 @@
       const breaker = o.source === "alert" ? [] : unhealthyDevices();          // devices failing right now are skipped
       const skipList = () => [...baseSkip, ...failedNow, ...(useBreaker ? breaker : [])];
       for (let attempt = 0; attempt < devices().length + 1; attempt++) {
-        let idx;
+        let key;
         try {
-          idx = await sb.req("POST", "rpc/claim_sms_slot", { p_devices: devices().length, p_limit: LIMIT, p_skip: skipList() });
+          key = await sb.req("POST", "rpc/claim_sms_device", { p_keys: devices().map(keyOf), p_limit: LIMIT, p_skip: skipList() });
         } catch (e) { return await fail(log, "Could not reach database to choose a device: " + e.message.slice(0, 120)); }
-        if (idx < 0 && useBreaker && breaker.length) { useBreaker = false; continue; }   // nothing else left: try the flaky device anyway
-        if (idx < 0) return await fail(log, lastErr ? "Failed on every device. Last error: " + lastErr
+        if (!key && useBreaker && breaker.length) { useBreaker = false; continue; }   // nothing else left: try the flaky device anyway
+        if (!key) return await fail(log, lastErr ? "Failed on every device. Last error: " + lastErr
           : (o.skipDevices && o.skipDevices.length ? "No other device available to retry (remaining devices are full)"
           : `All devices reached the daily limit (${LIMIT} each)`));
 
-        const dev = devices()[idx];
-        log.device_index = idx; log.device_label = dev.label || ("Device " + (idx + 1));
+        const dev = devByKey(key);
+        if (!dev) { failedNow.push(key); continue; }
+        const idx = devices().indexOf(dev);
+        log.device_key = key; log.device_index = idx; log.device_label = dev.label || ("Device " + (idx + 1));
         try {
           const resp = await fetch(base(dev) + "/3rdparty/v1/messages?skipPhoneValidation=true", {
             method: "POST",
@@ -105,8 +115,8 @@
             return log;
           }
           // Gateway answered with an error: it did NOT take the SMS -> give the slot back, try next device
-          await sb.req("POST", "rpc/release_sms_slot", { p_device: idx }).catch(() => {});
-          failedNow.push(idx); log.http_status = resp.status;
+          await sb.req("POST", "rpc/release_sms_device", { p_key: key }).catch(() => {});
+          failedNow.push(key); log.http_status = resp.status;
           lastErr = `${log.device_label}: HTTP ${resp.status} ${data.message || data.error || text.slice(0, 120)}`;
         } catch (e) {
           if (e.name === "TimeoutError" || e.name === "AbortError") {
@@ -114,7 +124,7 @@
             log.failure_reason = `${log.device_label}: no reply from gateway (timeout). The SMS may or may not have been sent.`;
             log.status = "unknown"; await save(log); return log;
           }
-          await sb.req("POST", "rpc/release_sms_slot", { p_device: idx }).catch(() => {});
+          await sb.req("POST", "rpc/release_sms_device", { p_key: key }).catch(() => {});
           return await fail(log, `${log.device_label}: network error (${e.message})`);
         }
       }
@@ -136,8 +146,8 @@
     const d = k ? new Date(states[k]) : null; return d && !isNaN(d) ? d.toISOString() : null;
   };
   async function refreshStatus(log) {
-    if (!log.gateway_message_id || log.device_index == null) return log;
-    const dev = devices()[log.device_index]; if (!dev) return log;
+    if (!log.gateway_message_id) return log;
+    const dev = findDevice(log); if (!dev) return log;
     const r = await fetch(`${base(dev)}/3rdparty/v1/messages/${enc(log.gateway_message_id)}`, {
       headers: { Authorization: authHeader(dev) }, signal: AbortSignal.timeout(15000),
     });
@@ -163,7 +173,7 @@
   const NO_RETRY = /invalid|not a valid|illegal|unallocated|unknown subscriber/i;   // bad number: another device won't help
   function chainDevices(log) {
     const used = []; let cur = log, guard = 0;
-    while (cur && guard++ < 10) { if (cur.device_index != null) used.push(cur.device_index); cur = cur.retry_of ? cache.logs.get(cur.retry_of) : null; }
+    while (cur && guard++ < 10) { { const k = logKey(cur); if (k) used.push(k); } cur = cur.retry_of ? cache.logs.get(cur.retry_of) : null; }
     return used;
   }
   async function autoRetry(log) {
@@ -213,11 +223,11 @@
   // one entry per device that has FAIL_STREAK+ bad outcomes in a row (newest first) within windowMs
   function evaluateHealth(windowMs = 3 * 3600000) {
     const out = [], since = Date.now() - windowMs;
-    const logs = [...cache.logs.values()].filter(l => l.device_index != null && l.source !== "alert" && new Date(l.created_at) > since)
+    const logs = [...cache.logs.values()].filter(l => logKey(l) && l.source !== "alert" && new Date(l.created_at) > since)
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     devices().forEach((d, i) => {
       let streak = 0, reason = "";
-      for (const l of logs.filter(x => x.device_index === i)) {
+      for (const l of logs.filter(x => logKey(x) === keyOf(d))) {
         if (l.status === "sent" || l.status === "delivered") break;                 // device works -> streak ends
         if (l.status === "failed") {
           if (NO_RETRY.test(l.failure_reason || "")) continue;                      // wrong number is not the phone's fault
@@ -226,11 +236,11 @@
           streak++; reason = reason || (l.status === "unknown" ? "no reply from gateway" : "phone is not picking up SMS");
         }                                                                           // fresh pending = neutral
       }
-      if (streak >= FAIL_STREAK) out.push({ key: "failing-" + i, type: "failing", idx: i, label: d.label || ("Device " + (i + 1)), streak, reason });
+      if (streak >= FAIL_STREAK) out.push({ key: "failing-" + keyOf(d), type: "failing", idx: i, dkey: keyOf(d), label: d.label || ("Device " + (i + 1)), streak, reason });
     });
     return out;
   }
-  const unhealthyDevices = () => evaluateHealth(30 * 60000).map(a => a.idx);
+  const unhealthyDevices = () => evaluateHealth(30 * 60000).map(a => a.dkey);
 
   function offlineAlerts() {
     const i = activeDeviceIndex(), d = devices()[i], info = deviceInfo[i];
@@ -302,7 +312,7 @@
       const r = await sb.req("GET", `sms_log?select=id&source=eq.alert&student_name=eq.${enc(name)}&created_at=gte.${enc(new Date(Date.now() - 3600000).toISOString())}&limit=1`);
       if (r && r.length) return;                                         // already alerted in the last hour
     } catch (_) { return; }
-    for (const j of jobs) await send({ name, phone: j.phone, message: j.message, source: "alert", skipDevices: [a.idx] });
+    for (const j of jobs) await send({ name, phone: j.phone, message: j.message, source: "alert", skipDevices: [a.dkey] });
   }
   function checkAlerts() {
     const sn = snoozed(), now = Date.now();
@@ -330,10 +340,9 @@
   async function refreshUsage() {
     if (!sb.configured) return;
     try {
-      const rows = await sb.req("GET", `sms_usage?select=device_index,count&day_key=eq.${istDay()}`);
-      const arr = devices().map(() => 0);
-      (rows || []).forEach(r => { if (r.device_index < arr.length) arr[r.device_index] = r.count; });
-      window.SMS_USAGE = arr;
+      const rows = await sb.req("GET", `sms_device_usage?select=device_key,count&day_key=eq.${istDay()}`);
+      const byKey = {}; (rows || []).forEach(r => { byKey[r.device_key] = r.count; });
+      window.SMS_USAGE = devices().map(d => byKey[keyOf(d)] || 0);
       if (typeof window.updateSmsUsageDisplay === "function") window.updateSmsUsageDisplay();
       notify();
     } catch (e) { console.warn("[sms_usage]", e.message); }
@@ -342,7 +351,7 @@
   window.SmsService = {
     LIMIT, devices, send, resend, refreshStatus, refreshPending, loadLogs, refreshUsage, normalizePhone, istDay,
     latestForAttendance: id => cache.byAtt.get(id) || null,
-    isStuck, evaluateHealth, refreshDeviceInfo, deviceInfo: () => deviceInfo, checkAlerts,
+    isStuck, logKey, evaluateHealth, refreshDeviceInfo, deviceInfo: () => deviceInfo, checkAlerts,
     onChange: f => listeners.push(f),
     ingest: remember,
   };

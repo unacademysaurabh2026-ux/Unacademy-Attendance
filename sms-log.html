@@ -146,7 +146,8 @@ function details(r) {
   if (r.sent_at) parts.push("Sent " + fmtT(r.sent_at));
   if (r.delivered_at) parts.push("Delivered " + fmtT(r.delivered_at));
   if (r.failure_reason) parts.push(`<span class="text-red-300">${esc(r.failure_reason)}</span>`);
-  if (SmsService.isStuck(r)) parts.push(`<span class="text-orange-300">Waiting ${Math.round((Date.now() - new Date(r.created_at)) / 60000)} min — phone may be off / no internet / flight mode. It will be sent when the phone is back (SMS Gate waits up to 24h).</span>`);
+  if (SmsService.isStuck(r)) parts.push(`<span class="text-orange-300">${Math.round((Date.now() - new Date(r.created_at)) / 60000)} min se phone ne status report nahi kiya. SMS pahunch chuka ho sakta hai (status late aata hai), ya phone band / internet band ho sakta hai. Parent se pooch lo, zaroorat ho to Resend.</span>`);
+  else if (["queued", "pending", "processed"].includes(r.status)) parts.push(`<span class="text-slate-400">Phone ne abhi status report nahi kiya — SMS aksar pahunch chuka hota hai, status phone sync hone par update hota hai (${Math.round((Date.now() - new Date(r.created_at)) / 60000)} min se).</span>`);
   if (r.retry_of) parts.push(`<span class="text-violet-300">↻ Auto-retry of an earlier failed SMS</span>`);
   else if (r.retried) parts.push(`<span class="text-violet-300">↻ Auto-retried on another device</span>`);
   if (r.status === "sent" && !r.delivered_at && Date.now() - new Date(r.created_at) > 10 * 60000)

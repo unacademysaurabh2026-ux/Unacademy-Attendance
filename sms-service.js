@@ -185,7 +185,8 @@
       phone: log.phone, message: log.message, source: "retry", retryOf: log.id, skipDevices: tried,
     });
   }
-  const STUCK_MS = 15 * 60000;
+  // The phone reports Sent/Delivered to the server late (20+ min is normal), so only call it stuck after 90 min
+  const STUCK_MS = 90 * 60000;
   const isStuck = l => ["queued", "pending", "processed"].includes(l.status) && Date.now() - new Date(l.created_at) > STUCK_MS;
   async function refreshPending(limit = 20) {
     if (!sb.configured) return;

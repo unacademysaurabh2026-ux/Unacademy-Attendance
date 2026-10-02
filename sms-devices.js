@@ -15,3 +15,4 @@ window.SMS_DEVICES = [
 // OPTIONAL: also send an SMS (through a healthy device) to these numbers, e.g. the admin:
 window.SMS_ALERT_PHONES = [];            // example: ["9876543210"]
 // OPTIONAL: SMS the phone's owner too -> add  ownerPhone: "9876543210"  inside that device's { ... } above.
+ 

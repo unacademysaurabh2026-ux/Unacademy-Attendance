@@ -42,7 +42,9 @@
   async function save(log) {
     log.updated_at = nowIso();
     remember(log);
-    try { await sb.upsert("sms_log", [log]); } catch (e) { console.warn("[sms_log] save:", e.message); }
+    // send only real columns (keys starting with "_" are in-memory notes; an unknown column makes Supabase reject the whole save)
+    const row = Object.fromEntries(Object.entries(log).filter(([k, v]) => !k.startsWith("_") && v !== undefined));
+    try { await sb.upsert("sms_log", [row]); } catch (e) { console.warn("[sms_log] save:", e.message); }
     notify();
   }
   async function fail(log, reason, status = "failed") {
